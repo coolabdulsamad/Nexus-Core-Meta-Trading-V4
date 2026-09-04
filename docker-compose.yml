@@ -1,0 +1,45 @@
+version: "3.8"
+
+# Nexus Core Meta Trading V4 — local infrastructure.
+# MT5 terminal itself is NOT in docker: the MetaTrader5 python package
+# must run on the same Windows host as the terminal.
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: nexus_v4_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-nexus_mt5}
+      POSTGRES_USER: ${DB_USER:-nexus}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-change_me_strong_password}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - tsdb_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./database/migrations:/docker-entrypoint-initdb.d/migrations:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-nexus} -d ${DB_NAME:-nexus_mt5}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: nexus_v4_qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/readyz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  tsdb_data:
+  qdrant_data:
