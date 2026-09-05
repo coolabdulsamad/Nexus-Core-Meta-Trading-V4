@@ -53,7 +53,7 @@ def _database_url() -> str:
     user = os.getenv("DB_USER", "nexus")
     pwd = os.getenv("DB_PASSWORD", "change_me_strong_password")
     host = os.getenv("DB_HOST", "localhost")
-    port = os.getenv("DB_PORT", "5432")
+    port = os.getenv("DB_PORT", "5544")  # 5432 belongs to the Alpaca edition
     name = os.getenv("DB_NAME", "nexus_mt5")
     return f"postgresql://{user}:{pwd}@{host}:{port}/{name}"
 
@@ -64,7 +64,7 @@ class DatabaseSettings(BaseModel):
 
 class QdrantSettings(BaseModel):
     host: str = os.getenv("QDRANT_HOST", "localhost")
-    port: int = int(os.getenv("QDRANT_PORT", "6333"))
+    port: int = int(os.getenv("QDRANT_PORT", "6644"))  # 6333 belongs to the Alpaca edition
     url: str = os.getenv("QDRANT_URL", "")          # set for remote/cloud Qdrant
     api_key: str = os.getenv("QDRANT_API_KEY", "")
 
