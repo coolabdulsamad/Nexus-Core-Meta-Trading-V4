@@ -82,6 +82,13 @@ docker compose up -d
 docker ps        # expect nexus_v4_db and nexus_v4_qdrant, both healthy
 ```
 
+> **Runs side-by-side with the Alpaca edition.** V4 deliberately uses host
+> ports **5544** (database) and **6644/6645** (Qdrant) because the old
+> system's `nexus_timescaledb` / `nexus_qdrant` containers already own
+> 5432 / 6333 / 6334. Both systems can run at the same time without
+> touching each other — separate containers, separate volumes, separate
+> databases, separate vector collections.
+
 ## 6. Apply the database schema
 
 Git Bash (installed with Git) — right-click the repo folder →
@@ -146,4 +153,4 @@ python -m src.live.live_trader             # Phase 5: the actual bot
 | self-test finds 0 symbols | Market Watch → Show All; also check your broker's suffixes (the connector tries `.PRO .A .M .STD .RAW .ECN`) |
 | retcode 10027 when live | *Allow algorithmic trading* + green Algo Trading button |
 | docker won't start | Docker Desktop running? WSL2 enabled? |
-| psql: connection refused | `docker ps` — is `nexus_v4_db` healthy? port 5432 already used by a local Postgres? change `DB_PORT` |
+| psql: connection refused | `docker ps` — is `nexus_v4_db` healthy? connect with `-p 5544` (V4's port), not the default 5432 |
