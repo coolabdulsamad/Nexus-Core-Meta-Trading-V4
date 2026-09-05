@@ -214,7 +214,7 @@ class MT5Connector:
         """Latest `count` bars, oldest first.
         Columns: timestamp(UTC), open, high, low, close, volume, spread_points.
         NOTE: MT5 timestamps are broker-server time; we treat them as UTC
-        consistently everywhere (features, memory, gates) so the brain only
+        waiting consistently everywhere (features, memory, gates) so the brain only
         ever compares like with like."""
         m = self._require()
         broker = self.resolve_symbol(symbol)
@@ -540,6 +540,37 @@ class MT5Connector:
         return all_ok
 
     # ------------------------------------------------------------------
+    def closed_position_summary(self, ticket: int,
+                                lookback_days: int = 30) -> Optional[dict]:
+        """The broker's truth about a CLOSED position: every deal carrying
+        this position id, summed. Used by the reconciler to journal exits
+        that happened while we were down (SL/TP fills, manual closes).
+        Returns {'exit_price', 'exit_time', 'profit', 'volume_closed'} or
+        None when no deals are found in the lookback window."""
+        m = self._require()
+        from datetime import datetime, timedelta, timezone
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=lookback_days)
+        deals = m.history_deals_get(start, end, position=ticket)
+        if not deals:
+            # older than the window: widen once before giving up
+            deals = m.history_deals_get(start - timedelta(days=330), end,
+                                        position=ticket)
+        if not deals:
+            return None
+        out_deals = [d for d in deals
+                     if d.entry in (m.DEAL_ENTRY_OUT, m.DEAL_ENTRY_INOUT)]
+        profit = float(sum(d.profit + d.swap + d.commission for d in deals))
+        volume_closed = float(sum(d.volume for d in out_deals))
+        last = max(out_deals or deals, key=lambda d: d.time)
+        return {
+            "exit_price": float(last.price),
+            "exit_time": pd.to_datetime(last.time, unit="s", utc=True),
+            "profit": profit,
+            "volume_closed": volume_closed,
+            "comment": getattr(last, "comment", "") or "",
+        }
+
     def ping(self) -> bool:
         try:
             self._require()

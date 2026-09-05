@@ -139,7 +139,7 @@ class GlobalConfig:
     MIN_NEIGHBOR_SIMILARITY = 0.50    # cosine floor
     MIN_NEIGHBOR_AGREEMENT = 0.55     # weighted majority (0.5 = coin flip)
     REGIME_FILTER_ENABLED = True
-    BUY_THRESHOLD = 0.52              # HOLD zone between 0.48 and 0.52
+    BUY_THRESHOLD = 0.52              # HOLD zone between 0.48 and falling 0.52
     SELL_THRESHOLD = 0.48
     PCA_COMPONENTS = 64
     # V4: one memory collection per asset class (market_memory_60m_forex,
@@ -295,6 +295,16 @@ class GlobalConfig:
     # ----- Notifications -----
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+    # ----- Live trading (Phase 5) -----
+    # DRY_RUN is the master safety switch. It is ON unless the env var is
+    # literally "false" - any other value (empty, "true", "1", typo) keeps
+    # order sending OFF. The live trader journals every decision either way.
+    DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() != "false"
+    LIVE_STATE_PATH = os.getenv("LIVE_STATE_PATH", "state/live_state.json")
+    LIVE_MANAGE_EVERY_SECONDS = 60    # position-management cadence (tick-based exits)
+    LIVE_ENTRY_DELAY_SECONDS = 20     # after the hour: let the broker finalize the closed bar
+    HEARTBEAT_SECONDS = TELEGRAM_HEARTBEAT_CYCLES * 300  # ~30 min at the old 300s cadence
 
     # ----- Misc -----
     WIN_RATE_WINDOW = 20
