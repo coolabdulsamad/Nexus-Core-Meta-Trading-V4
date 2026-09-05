@@ -122,26 +122,38 @@ class MT5Connector:
     # ------------------------------------------------------------------
     def resolve_symbol(self, canonical: str) -> Optional[str]:
         """Map a canonical name (EURUSD) to the broker's real symbol
-        (EURUSD.pro, EURUSDm, EUR/USD ...). Cached after first success."""
+        (EURUSD.pro, EURUSDm, EUR/USD, GOLD for XAUUSD at XM ...).
+        Tries: exact name -> configured aliases -> suffix-stripped fuzzy
+        match. Cached after first success."""
         if canonical in self._symbol_map:
             return self._symbol_map[canonical]
         m = self._require()
-        exact = m.symbol_info(canonical)
-        if exact is not None:
-            self._symbol_map[canonical] = canonical
-            return canonical
-        flat = canonical.replace("/", "").replace("-", "").upper()
-        for s in m.symbols_get():
-            name = s.name.upper()
-            stem = name.replace("/", "").replace("-", "")
-            for suffix in (".PRO", ".A", ".M", "M", ".STD", ".RAW", ".ECN", "_", "."):
-                if stem.endswith(suffix):
-                    stem = stem[: -len(suffix)]
-                    break
-            if stem == flat:
-                self._symbol_map[canonical] = s.name
-                logger.info(f"Symbol resolved: {canonical} -> {s.name}")
-                return s.name
+        aliases = config.SYMBOL_ALIASES.get(canonical.upper(), [])
+        candidates = [canonical] + [a for a in aliases if a != canonical]
+
+        # 1) exact hits (covers aliases like XM's GOLD/SILVER)
+        for cand in candidates:
+            if m.symbol_info(cand) is not None:
+                self._symbol_map[canonical] = cand
+                if cand != canonical:
+                    logger.info(f"Symbol resolved via alias: {canonical} -> {cand}")
+                return cand
+
+        # 2) fuzzy: strip known broker suffixes from the full symbol list
+        all_symbols = m.symbols_get()
+        for cand in candidates:
+            flat = cand.replace("/", "").replace("-", "").upper()
+            for s in all_symbols:
+                name = s.name.upper()
+                stem = name.replace("/", "").replace("-", "")
+                for suffix in (".PRO", ".A", ".M", "M", ".STD", ".RAW", ".ECN", "_", "."):
+                    if stem.endswith(suffix):
+                        stem = stem[: -len(suffix)]
+                        break
+                if stem == flat:
+                    self._symbol_map[canonical] = s.name
+                    logger.info(f"Symbol resolved: {canonical} -> {s.name}")
+                    return s.name
         logger.warning(f"Symbol {canonical} not found at this broker")
         return None
 
