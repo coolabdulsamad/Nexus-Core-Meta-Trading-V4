@@ -1,0 +1,12 @@
+# Line-ending lockdown: Git on Windows (core.autocrlf=true) would otherwise
+# check these out as CRLF, and CRLF breaks bash ("set: pipefail" error),
+# Makefiles and docker entrypoint mounts.
+*.sh         text eol=lf
+*.bash       text eol=lf
+Makefile     text eol=lf
+*.sql        text eol=lf
+*.py         text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+.env.example text eol=lf
+*.md         text eol=lf
