@@ -249,6 +249,60 @@ count is an upper bound; per-trade economics are intact.
 
 ---
 
+## 11b. Phase 4b — parameter sweep over cached verdicts
+
+The brain's verdict at a bar does not depend on the trading config (stops,
+horizons, gates) — only on the brain and the data. So we ask the brain
+ONCE per symbol, cache the verdicts, then replay many config variants in
+seconds each with zero Qdrant traffic.
+
+```powershell
+# Step 1 — collect (slow, ONCE; same order of time as the Phase 4 run).
+# Resumable: a symbol with an existing cache file is skipped, so if it
+# stops halfway just run the same command again.
+python scripts/sweep_configs.py --collect --months 24
+
+# Step 2 — evaluate all 12 variants (fast: seconds per variant)
+python scripts/sweep_configs.py --eval --months 24
+
+# Iterate on a subset while exploring
+python scripts/sweep_configs.py --eval --variants baseline,horizon6,h6_noearly
+python scripts/sweep_configs.py --collect --cls forex          # one class only
+```
+
+Cache lives in `reports\verdict_cache\*.pkl` (git-ignored, regenerable).
+If you ever re-run Phase 2/3 (new bars, new brain), delete that folder and
+collect again — stale verdicts would silently describe the old brain.
+
+Variants tested (see `VARIANTS` in the script — add your own there):
+
+| Group | Variants | Question answered |
+|---|---|---|
+| horizon | `horizon6`, `horizon4` | brain predicts 4h ahead — does a shorter hold keep more of the edge? |
+| exits | `no_early_exits` | do scale-outs/ratchet/trailing help or clip winners? |
+| risk shape | `wide_tp`, `tight_stop` | is the 1.5R target / 2xATR stop the right asymmetry? |
+| gates | `conviction_hi`, `quality_055` | does trading less, but better, turn PF positive? |
+| combos | `h6_conviction`, `h6_noearly`, `h4_wide_tp`, `h6_q055` | interactions of the above |
+
+Outputs:
+
+- `reports\sweep_results.csv` — one row per variant: trades, win rate,
+  profit factor, expectancy (R), return %, max drawdown %
+- `reports\sweep_best_<variant>_per_symbol.csv` — per-symbol breakdown of
+  the best variant (which symbols carry the edge, which destroy it)
+- Console: full ranking + per-class and exit-reason anatomy for the winner
+
+The decision rule for Phase 5 is unchanged: a variant must show
+**PF > 1.0 after costs** on the full universe, ideally with the per-symbol
+table showing broad (not one-lucky-symbol) contribution.
+
+Note: variants can only change gates DOWNSTREAM of candidacy (conviction,
+quality, ADX, exits, sizing, horizon). Session/spread prefilters decide
+WHICH bars get a verdict at collect time, so the sweep cannot vary them —
+a session/spread experiment needs a fresh `--collect`.
+
+---
+
 ## Daily use (later phases)
 
 ```powershell
@@ -256,6 +310,8 @@ python -m src.ingestion.backfill_history   # Phase 2: one-time, ~hours
 python -m src.ingestion.run_pump           # Phase 2: hourly (task scheduler)
 python -m src.memory.build_memory          # Phase 3
 python -m src.backtester.run_backtest      # Phase 4
+python scripts/sweep_configs.py --collect --months 24   # Phase 4b: once
+python scripts/sweep_configs.py --eval --months 24      # Phase 4b: anytime
 python -m src.live.live_trader             # Phase 5: the actual bot
 ```
 
