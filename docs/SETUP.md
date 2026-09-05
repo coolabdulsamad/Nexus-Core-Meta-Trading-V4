@@ -198,10 +198,54 @@ python scripts/brain_sanity.py
 ```
 
 Expected: per class, memory populated (hundreds of thousands of states),
-`0 look-ahead violations`, probability std > 0.005, and a quality
-distribution whose max sits in the ~0.35-0.55 band (the Alpaca edition's
-live maximum ever observed was 0.480 — a max near 1.0 would mean the
-calibration is broken).
+`0 look-ahead violations`, probability std > 0.005, and a smooth quality
+distribution. NOTE: V4's quality scale runs HOTTER than the Alpaca
+edition's (whose live max was 0.480) — with ~1.2M states, top-of-book
+similarity is structurally higher, so a V4 max around 0.6-0.75 is normal.
+The 0.35/0.45 gates are re-derived from the Phase 4 quality-bucket table
+in Phase 7; do not "fix" the scale by hand.
+
+---
+
+## 11. Phase 4 — the honest backtest
+
+No MT5 needed — it reads TimescaleDB + Qdrant and simulates trades bar by
+bar with real costs (your stored per-bar spread, Wednesday triple swap,
+slippage on every fill). Decisions are made on bar close and filled at the
+NEXT bar's open; if a bar touches both stop and target, the stop loses.
+
+```powershell
+# Full run: every symbol, trailing 24 months (minutes, not hours —
+# brain queries are batched; expect ~10-20 min for all 38 symbols)
+python -m src.backtester.run_backtest
+
+# Faster while iterating / single-class runs
+python -m src.backtester.run_backtest --months 12 --class forex
+python -m src.backtester.run_backtest --symbols EURUSD XAUUSD BTCUSD --months 24
+```
+
+Outputs:
+
+- `reports\backtest_trades.csv` — every simulated trade with entry
+  quality/prob/agreement, exit reason, MAE/MFE, swap paid
+- `reports\backtest_summary.json` — headline stats, per-symbol results,
+  and the decision funnel (where signals die)
+- Console: headline PF / expectancy, per-class table, **quality-bucket
+  table** (this is the Phase 7 input that re-derives the quality gates
+  from THIS brain's distribution), exit-reason anatomy, total funnel
+
+How to read the result:
+
+| Signal | Meaning |
+|---|---|
+| overall PF > 1.0 after costs | the brain has a raw edge worth pursuing |
+| PF rising across quality buckets | the quality score ranks trades correctly -> gates can be tightened to where PF turns > 1 |
+| PF < 1 everywhere, all buckets | honest no-edge verdict — we recalibrate features/gates, not fudge costs |
+| exits dominated by `time_stop` | horizon/targets mis-set; dominated by `stop_loss` means gates too loose |
+
+Caveats printed in every summary: portfolio-level caps (max positions,
+currency risk) are NOT simulated — they only remove trades, so the trade
+count is an upper bound; per-trade economics are intact.
 
 ---
 
