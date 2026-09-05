@@ -139,7 +139,7 @@ class GlobalConfig:
     MIN_NEIGHBOR_SIMILARITY = 0.50    # cosine floor
     MIN_NEIGHBOR_AGREEMENT = 0.55     # weighted majority (0.5 = coin flip)
     REGIME_FILTER_ENABLED = True
-    BUY_THRESHOLD = 0.52              # HOLD zone between 0.48 and falling 0.52
+    BUY_THRESHOLD = 0.52              # HOLD zone between 0.48 and 0.52
     SELL_THRESHOLD = 0.48
     PCA_COMPONENTS = 64
     # V4: one memory collection per asset class (market_memory_60m_forex,

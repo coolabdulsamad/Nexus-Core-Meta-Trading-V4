@@ -214,7 +214,7 @@ class MT5Connector:
         """Latest `count` bars, oldest first.
         Columns: timestamp(UTC), open, high, low, close, volume, spread_points.
         NOTE: MT5 timestamps are broker-server time; we treat them as UTC
-        waiting consistently everywhere (features, memory, gates) so the brain only
+        consistently everywhere (features, memory, gates) so the brain only
         ever compares like with like."""
         m = self._require()
         broker = self.resolve_symbol(symbol)
