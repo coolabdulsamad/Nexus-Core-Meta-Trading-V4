@@ -4,7 +4,7 @@ src/live/risk_engine.py
 The portfolio risk engine - V4's big new shield vs the Alpaca edition.
 
 Forex pairs share currencies: long EURUSD + long GBPUSD is a doubled
-USD-short. worse The Alpaca edition sized every position in isolation; V4 tracks
+USD-short. The Alpaca edition sized every position in isolation; V4 tracks
 NET RISK PER CURRENCY across the whole book and refuses entries that push
 a currency past its cap, plus a hard cap on TOTAL open risk, a max position
 count, daily loss/profit guards and an account drawdown circuit breaker.
