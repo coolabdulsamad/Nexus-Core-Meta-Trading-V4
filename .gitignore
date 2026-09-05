@@ -18,6 +18,10 @@ logs/
 state/
 *.pid
 
+# Fitted models (regenerate with: python -m src.memory.build_memory)
+models/
+*.pkl
+
 # Data dumps
 data/
 *.parquet

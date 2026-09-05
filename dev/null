@@ -1,0 +1,7 @@
+    # Completeness is judged on the TRAILING window the brain actually
+    # learns from (HISTORY_YEARS). A symbol whose broker history simply
+    # starts later (e.g. XM's AUDUSD starts mid-2022) is not "dirty" -
+    # it is complete for as long as the broker serves it.
+    cutoff = last - pd.Timedelta(days=int(config.HISTORY_YEARS * 365.25))
+    window_start = first if first > cutoff else cutoff
+    win = bars[bars["timestamp"] >= window_start]
