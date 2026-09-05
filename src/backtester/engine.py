@@ -12,6 +12,9 @@ Methodology notes (deliberately honest):
     groups of 64) so a multi-year run takes minutes, not days. Some chunk
     queries are wasted on bars that turn out to be inside an open trade —
     harmless and much faster than per-bar round trips.
+  - verdict_override lets the sweep replay precomputed verdicts with ZERO
+    Qdrant traffic: positions are stable because frames are built by the
+    same query, same window.
   - Loss cooldowns (post-stop ban, repeat-loss ban, flat-bars-after-close)
     ARE simulated: they shape live trade flow and must shape the backtest too.
   - Portfolio-level caps (currency risk, max positions) are NOT simulated;
@@ -70,6 +73,32 @@ class SymbolResult:
     asset_class: str
     trades: list = field(default_factory=list)
     funnel: Funnel = field(default_factory=Funnel)
+    verdicts: dict = field(default_factory=dict)
+
+
+def prepare_frame(data: pd.DataFrame):
+    """Shared frame prep for run() and the sweep's verdict collector."""
+    d = data.reset_index(drop=True)
+    d["spread_price"] = d["spread_pct"].clip(lower=0) * d["close"]
+    d["spread_med20"] = d["spread_price"].rolling(20, min_periods=5).median()
+    d["bar_range"] = d["high"] - d["low"]
+    ts_idx = pd.DatetimeIndex(d["timestamp"])
+    if ts_idx.tz is None:  # DB returns tz-aware; never crash on naive frames
+        ts_idx = ts_idx.tz_localize("UTC")
+    return d, ts_idx
+
+
+def candidate_positions(symbol: str, lo: int, hi: int,
+                        atrs, sprs, med20, ts_idx) -> list[int]:
+    """Bars passing the cheap (non-brain) gates in [lo, hi)."""
+    return [
+        j for j in range(lo, hi)
+        if np.isfinite(atrs[j]) and atrs[j] > 0
+        and _session_ok(ts_idx[j], symbol)
+        and not (config.SPREAD_FILTER_ENABLED
+                 and np.isfinite(med20[j]) and med20[j] > 0
+                 and sprs[j] > config.SPREAD_MAX_MULT_OF_MEDIAN * med20[j])
+    ]
 
 
 def _session_ok(t: pd.Timestamp, symbol: str) -> bool:
@@ -108,8 +137,9 @@ def _risk_pct(quality: float) -> float:
 
 
 class SymbolBacktester:
-    def __init__(self, symbol: str, asset_class: str, encoder: VectorEncoder,
-                 qdrant_client, equity: float = None):
+    def __init__(self, symbol: str, asset_class: str, encoder: VectorEncoder = None,
+                 qdrant_client=None, equity: float = None,
+                 verdict_override: dict = None):
         self.symbol = symbol
         self.asset_class = asset_class
         self.encoder = encoder
@@ -117,6 +147,8 @@ class SymbolBacktester:
         self.collection = collection_name(asset_class)
         self.equity = equity if equity is not None else config.BACKTEST_INITIAL_CAPITAL
         self.costs = CostModel(asset_class)
+        # sweep mode: precomputed {position: verdict} — no encoder/Qdrant needed
+        self.verdict_override = verdict_override
 
     def _batch_verdicts(self, d: pd.DataFrame, positions: list[int]) -> dict:
         """Vectorized brain for a list of positional indices. Returns
@@ -163,14 +195,8 @@ class SymbolBacktester:
         open/high/low/close, spread_pct, atr_14, adx_14 + VECTOR_FEATURES."""
         res = SymbolResult(self.symbol, self.asset_class)
         funnel = res.funnel
-        d = data.reset_index(drop=True)
-        d["spread_price"] = d["spread_pct"].clip(lower=0) * d["close"]
-        d["spread_med20"] = d["spread_price"].rolling(20, min_periods=5).median()
-        d["bar_range"] = d["high"] - d["low"]
+        d, ts_idx = prepare_frame(data)
 
-        ts_idx = pd.DatetimeIndex(d["timestamp"])
-        if ts_idx.tz is None:  # DB returns tz-aware; never crash on naive frames
-            ts_idx = ts_idx.tz_localize("UTC")
         opens = d["open"].to_numpy(); highs = d["high"].to_numpy()
         lows = d["low"].to_numpy(); closes = d["close"].to_numpy()
         sprs = d["spread_price"].to_numpy()
@@ -183,25 +209,23 @@ class SymbolBacktester:
         flat_until = 0
         no_entry_until = pd.Timestamp("1970-01-01", tz="UTC")  # loss cooldown horizon
         stop_times: list[pd.Timestamp] = []  # recent stop-outs (repeat-loss rule)
+        all_verdicts: dict[int, dict] = {}
         verdicts: dict[int, dict] = {}
         chunk_hi = -1  # verdict cache covers [i, chunk_hi); refilled once per window
+        if self.verdict_override is not None:
+            funnel.brain_called = len(self.verdict_override)
+            chunk_hi = n  # never refill
         i = 0
         while i < n - 1:
             # refill verdict cache ONCE per CHUNK window (cheap gates only);
             # non-candidate bars inside the window simply have no verdict
             if i >= chunk_hi:
-                c_end = min(i + CHUNK, n - 1)
-                cands = [
-                    j for j in range(i, c_end)
-                    if np.isfinite(atrs[j]) and atrs[j] > 0
-                    and _session_ok(ts_idx[j], self.symbol)
-                    and not (config.SPREAD_FILTER_ENABLED
-                             and np.isfinite(med20[j]) and med20[j] > 0
-                             and sprs[j] > config.SPREAD_MAX_MULT_OF_MEDIAN * med20[j])
-                ]
+                cands = candidate_positions(self.symbol, i, min(i + CHUNK, n - 1),
+                                            atrs, sprs, med20, ts_idx)
                 verdicts = self._batch_verdicts(d, cands) if cands else {}
                 funnel.brain_called += len(cands)
-                chunk_hi = c_end
+                all_verdicts.update(verdicts)
+                chunk_hi = i + CHUNK
 
             funnel.bars += 1
             if i < flat_until:
@@ -229,7 +253,10 @@ class SymbolBacktester:
                 continue
             funnel.spread_ok += 1
 
-            verdict = verdicts.get(i)
+            if self.verdict_override is not None:
+                verdict = self.verdict_override.get(i)
+            else:
+                verdict = verdicts.get(i)
             if verdict is None:
                 i += 1
                 continue
@@ -295,15 +322,16 @@ class SymbolBacktester:
             side = 1 if long_sig else -1
             entry_px = self.costs.fill_price(opens[i + 1], side, "entry", sprs[i + 1])
             slice_cap = min(config.CAPITAL_PER_SYMBOL, self.equity * config.SLICE_PCT_OF_EQUITY)
-            risk_usd = slice_cap * _risk_pct(quality)
             stop_dist = config.STOP_ATR_MULT * atr
-            notional = risk_usd * entry_px / stop_dist
+            notional = slice_cap * _risk_pct(quality) * entry_px / stop_dist
             # notional caps (live has them, so does the backtest)
             notional = min(notional, slice_cap * config.NOTIONAL_CAP_PCT,
                            config.NOTIONAL_CAP_ABS)
             if notional <= 0 or not np.isfinite(notional):
                 i += 1
                 continue
+            # TRUE risk after caps: a full stop-out loses exactly -1R
+            risk_usd = notional * stop_dist / entry_px
 
             trade = simulate_trade(
                 ts=ts_idx, opens=opens, highs=highs, lows=lows, closes=closes,
@@ -334,6 +362,7 @@ class SymbolBacktester:
                                              hours=config.REPEAT_LOSS_COOLDOWN_HOURS))
             i = trade.exit_idx + 1
 
+        res.verdicts = all_verdicts
         logger.info(f"{self.symbol}: {funnel.entries} trades / "
                     f"{funnel.brain_called} brain calls")
         return res
