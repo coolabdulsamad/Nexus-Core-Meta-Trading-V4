@@ -125,6 +125,17 @@ class GlobalConfig:
     FORWARD_HORIZON_HOURS = 4         # prediction target: 4 x 1h bars ahead
     MEMORY_NEIGHBORS = 100            # k nearest states retrieved
     MEMORY_MIN_AGE_MINUTES = (FORWARD_HORIZON_HOURS + 1) * 60  # look-ahead guard
+
+    # Multi-horizon labels (Phase 4c). The memory stores one forward return
+    # per horizon; BRAIN_LABEL_HORIZON picks which label verdicts use.
+    # The look-ahead guard SCALES with the label: a 24h outcome is only
+    # knowable 24h later, so horizon h excludes neighbors younger than
+    # (bars(h) + 1) hours relative to decision time. Never shorten this.
+    BRAIN_LABEL_HORIZONS = ("4h", "12h", "24h")   # labels stored in memory
+    BRAIN_LABEL_HORIZON = "4h"                     # label the brain trades on
+    BRAIN_LABEL_BARS = {"4h": FORWARD_HORIZON_HOURS, "12h": 12, "24h": 24}
+    BRAIN_LABEL_PAYLOAD_KEY = {"4h": "fwd", "12h": "fwd_12h", "24h": "fwd_24h"}
+
     MIN_NEIGHBOR_SIMILARITY = 0.50    # cosine floor
     MIN_NEIGHBOR_AGREEMENT = 0.55     # weighted majority (0.5 = coin flip)
     REGIME_FILTER_ENABLED = True
@@ -206,7 +217,7 @@ class GlobalConfig:
     # ----- Trade structure (1h recalibration) -----
     STOP_ATR_MULT = 2.0               # stop distance = 2 x ATR(1h)
     REWARD_RISK_RATIO = 1.5           # TP = 1.5R (3 x ATR)
-    SLIPPAGE_BPS = 0.0005
+    SLIPPAGE_BPS = 0.5                # basis points per fill (0.5bp = 0.005%); costs.py divides by 10000
     TIME_LIMIT_BARS = 16              # TP needs 3 ATR - give it 16h
     COOLDOWN_BARS = 3
     ORDER_FILL_RETRIES = 3            # MT5 requotes happen; retry with fresh price

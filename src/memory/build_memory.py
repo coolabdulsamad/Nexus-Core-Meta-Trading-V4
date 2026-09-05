@@ -18,6 +18,7 @@ import hashlib
 import sys
 from typing import Dict, List
 
+import numpy as np
 import pandas as pd
 from qdrant_client.models import PointStruct
 
@@ -42,7 +43,8 @@ CLASS_POOLS: Dict[str, List[str]] = {
 }
 
 _FETCH_SQL = """
-SELECT symbol, time_bucket, {features}, forward_return_4h, regime_label
+SELECT symbol, time_bucket, {features}, forward_return_4h,
+       forward_return_12h, forward_return_24h, regime_label
 FROM feature_cache_1h
 WHERE symbol = ANY(%s) AND forward_return_4h IS NOT NULL
 ORDER BY time_bucket
@@ -85,20 +87,31 @@ def build_class(asset_class: str, symbols: List[str], recreate: bool = True) -> 
                   .astype("int64").to_numpy() // 10**9)
     symbols_arr = df["symbol"].to_numpy()
     fwds = df["forward_return_4h"].astype(float).to_numpy()
+    fwds_12 = pd.to_numeric(df["forward_return_12h"],
+                            errors="coerce").to_numpy(dtype="float64")
+    fwds_24 = pd.to_numeric(df["forward_return_24h"],
+                            errors="coerce").to_numpy(dtype="float64")
     regimes = df["regime_label"].astype(str).to_numpy()
 
     written = 0
     batch: List[PointStruct] = []
     for i in range(len(df)):
+        payload = {
+            "symbol": str(symbols_arr[i]),
+            "ts": int(ts_epoch[i]),
+            "fwd": float(fwds[i]),
+            "regime": regimes[i],
+        }
+        # longer-horizon labels are absent for the newest rows (their
+        # outcome has not happened yet); verdict math skips missing labels
+        if np.isfinite(fwds_12[i]):
+            payload["fwd_12h"] = float(fwds_12[i])
+        if np.isfinite(fwds_24[i]):
+            payload["fwd_24h"] = float(fwds_24[i])
         batch.append(PointStruct(
             id=_point_id(symbols_arr[i], int(ts_epoch[i])),
             vector=vectors[i].tolist(),
-            payload={
-                "symbol": str(symbols_arr[i]),
-                "ts": int(ts_epoch[i]),
-                "fwd": float(fwds[i]),
-                "regime": regimes[i],
-            },
+            payload=payload,
         ))
         if len(batch) >= _BATCH:
             written += upsert_points(client, asset_class, batch)

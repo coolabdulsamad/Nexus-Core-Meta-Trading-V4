@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS feature_cache_1h (
     sentiment_score DECIMAL(6, 4),
     forward_return_1h DECIMAL(12, 8),
     forward_return_4h DOUBLE PRECISION,
+    forward_return_12h DOUBLE PRECISION,   -- Phase 4c: multi-horizon labels
+    forward_return_24h DOUBLE PRECISION,
     regime_label VARCHAR(20) DEFAULT 'unknown',
     PRIMARY KEY (symbol, time_bucket)
 );

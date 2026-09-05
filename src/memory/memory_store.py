@@ -80,17 +80,21 @@ def upsert_points(client: QdrantClient, asset_class: str,
 
 def recall(client: QdrantClient, asset_class: str, vector,
            asof: Optional[datetime] = None,
-           k: Optional[int] = None) -> List[Tuple[float, float, int, str]]:
+           k: Optional[int] = None,
+           label_horizon: Optional[str] = None) -> List[Tuple[float, float, int, str]]:
     """
     k nearest memory states visible `asof` a decision time.
 
-    Returns [(similarity, forward_return_4h, ts, symbol), ...], best first.
-    The look-ahead guard excludes every state younger than
-    MEMORY_MIN_AGE_MINUTES relative to `asof` (its outcome was not yet
-    knowable then).
+    Returns [(similarity, forward_return, ts, symbol), ...], best first,
+    where forward_return is the ACTIVE label (config.BRAIN_LABEL_HORIZON).
+    The look-ahead guard excludes every state whose outcome for that label
+    was not yet knowable at `asof` ((label_bars + 1) hours).
     """
     asof = asof or datetime.now(timezone.utc)
-    cutoff = int((asof - timedelta(minutes=config.MEMORY_MIN_AGE_MINUTES))
+    h = label_horizon or config.BRAIN_LABEL_HORIZON
+    key = config.BRAIN_LABEL_PAYLOAD_KEY[h]
+    guard_min = (config.BRAIN_LABEL_BARS[h] + 1) * 60
+    cutoff = int((asof - timedelta(minutes=guard_min))
                  .timestamp())
     result = client.query_points(
         collection_name=collection_name(asset_class),
@@ -104,7 +108,7 @@ def recall(client: QdrantClient, asset_class: str, vector,
     out = []
     for p in result.points:
         payload = p.payload or {}
-        fwd = payload.get("fwd")
+        fwd = payload.get(key)
         if fwd is None:
             continue
         out.append((float(p.score), float(fwd),

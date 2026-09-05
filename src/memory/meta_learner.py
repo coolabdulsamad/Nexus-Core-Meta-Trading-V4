@@ -49,11 +49,13 @@ def verdict_from_neighbors(
     neighbors: Sequence[Tuple[float, float, int, str]],
 ) -> Optional[Dict]:
     """
-    neighbors: [(similarity, forward_return_4h, ts, symbol), ...]
+    neighbors: [(similarity, forward_return, ts, symbol), ...]
+        (forward_return = the active label; None entries are skipped)
     Returns the verdict dict, or None when nothing clears the floor.
     """
     keep = [(s, r) for s, r, _, _ in neighbors
-            if s >= config.MIN_NEIGHBOR_SIMILARITY and np.isfinite(r)]
+            if s >= config.MIN_NEIGHBOR_SIMILARITY
+            and r is not None and np.isfinite(r)]
     if not keep:
         return None
 

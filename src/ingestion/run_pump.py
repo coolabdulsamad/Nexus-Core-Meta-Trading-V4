@@ -49,6 +49,7 @@ FEATURE_COLUMNS = (
     "dist_sma50", "dist_sma200", "dist_vwap",
     "hour_sin", "hour_cos", "dow_sin", "dow_cos",
     "spread_pct", "forward_return_1h", "forward_return_4h",
+    "forward_return_12h", "forward_return_24h",
     "regime_label",
 )
 
@@ -62,9 +63,10 @@ def add_forward_returns(features: pd.DataFrame) -> pd.DataFrame:
     """
     close = features["close"]
     features["forward_return_1h"] = close.shift(-1) / close - 1.0
-    features["forward_return_4h"] = (
-        close.shift(-config.FORWARD_HORIZON_HOURS) / close - 1.0
-    )
+    # One forward-return label per brain horizon (Phase 4c). Keys are
+    # "4h"/"12h"/"24h" -> columns forward_return_4h/_12h/_24h.
+    for label, bars in config.BRAIN_LABEL_BARS.items():
+        features[f"forward_return_{label}"] = close.shift(-bars) / close - 1.0
     return features
 
 
