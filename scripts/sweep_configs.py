@@ -14,8 +14,16 @@ at every candidate bar. Those verdicts do NOT depend on the trading config
               verdicts (fast — seconds per variant, ZERO Qdrant traffic)
 
 Sweepable knobs are the gates DOWNSTREAM of candidacy (conviction, quality,
-ADX, exits, sizing, horizon). Session/spread prefilters decide WHICH bars
-get a verdict at collect time, so variants cannot change those.
+ADX, exits, sizing, horizon) plus the brain LABEL horizon (4h/12h/24h) once
+the memory stores multi-horizon labels (Phase 4c). Session/spread
+prefilters decide WHICH bars get a verdict at collect time, so variants
+cannot change those.
+
+The cache stores verdicts per label horizon; collect is incremental — it
+only queries horizons missing from the cache (a 4b-era cache counts as
+having "4h"). Each horizon is queried with its OWN look-ahead guard
+((label_bars + 1) hours), so 24h verdicts never see fresher-than-knowable
+neighbors.
 
 Usage (from repo root, venv active, DB+Qdrant up):
   python scripts/sweep_configs.py --collect --cls forex --months 24
@@ -79,6 +87,21 @@ VARIANTS = {
                    "REWARD_RISK_RATIO": 2.5},
     "h6_q055": {"TIME_LIMIT_BARS": 6, "TIME_PARTIAL_BARS": 4,
                 "MIN_SIGNAL_QUALITY": 0.55, "CRYPTO_MIN_SIGNAL_QUALITY": 0.45},
+    # ---- Phase 4c: label-horizon axis ----------------------------------
+    # The 4b sweep showed longer holds lose LESS (16 > 6 > 4 bars), i.e.
+    # the brain's 4h label may simply be the wrong horizon. These variants
+    # replay the SAME bars with verdicts computed from 12h / 24h outcomes.
+    # Needs a multi-horizon memory + collect (see SETUP 11b/11c).
+    "label12h": {"BRAIN_LABEL_HORIZON": "12h"},
+    "label24h": {"BRAIN_LABEL_HORIZON": "24h"},
+    # label/hold alignment: hold roughly as long as the label predicts
+    "l12_h12": {"BRAIN_LABEL_HORIZON": "12h",
+                "TIME_LIMIT_BARS": 12, "TIME_PARTIAL_BARS": 8},
+    "l24_h24": {"BRAIN_LABEL_HORIZON": "24h",
+                "TIME_LIMIT_BARS": 24, "TIME_PARTIAL_BARS": 16},
+    # label x best 4b variant
+    "l12_tight": {"BRAIN_LABEL_HORIZON": "12h", "STOP_ATR_MULT": 1.5},
+    "l24_tight": {"BRAIN_LABEL_HORIZON": "24h", "STOP_ATR_MULT": 1.5},
 }
 
 _STAT_KEYS = ("trades", "win_rate", "profit_factor", "expectancy_R",
@@ -104,20 +127,35 @@ def _build_pairs(args) -> list[tuple[str, str]]:
     return [(s, cls) for cls, pool in pools.items() for s in pool]
 
 
+def _load_cache(path: Path) -> dict:
+    """Cache file -> {horizon: {pos: verdict}}. Back-compatible with the
+    Phase 4b single-horizon format ({"verdicts": ...} == 4h)."""
+    with open(path, "rb") as fh:
+        blob = pickle.load(fh)
+    if "verdicts_by_horizon" in blob:
+        return dict(blob["verdicts_by_horizon"])
+    if "verdicts" in blob:           # 4b format: 4h only
+        return {"4h": blob["verdicts"]}
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # collect
 # ---------------------------------------------------------------------------
 def collect(pairs, months: int) -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     start, end = _window(months)
+    horizons = tuple(config.BRAIN_LABEL_HORIZONS)
     qc = get_qdrant()
     encoders = {}
     with get_conn() as conn:
         for k, (symbol, cls) in enumerate(pairs, 1):
             out = _cache_path(symbol, months)
-            if out.exists():
-                print(f"[collect {k}/{len(pairs)}] {symbol}: cache exists, skipping",
-                      flush=True)
+            existing = _load_cache(out) if out.exists() else {}
+            missing = [h for h in horizons if h not in existing]
+            if not missing:
+                print(f"[collect {k}/{len(pairs)}] {symbol}: cache complete "
+                      f"({', '.join(horizons)}), skipping", flush=True)
                 continue
             df = load_symbol_frame(conn, symbol, start, end)
             if len(df) < 500:
@@ -137,13 +175,22 @@ def collect(pairs, months: int) -> None:
                 ts_idx,
             )
             t0 = time.time()
-            verdicts = bt._batch_verdicts(d, cands) if cands else {}
+            if cands:
+                result = bt._batch_verdicts(d, cands, label_horizons=tuple(missing))
+                # single missing horizon comes back flat; normalize to nested
+                if len(missing) == 1:
+                    result = {missing[0]: result}
+            else:
+                result = {h: {} for h in missing}
+            merged = {**existing, **result}
             with open(out, "wb") as fh:
                 pickle.dump({"symbol": symbol, "asset_class": cls,
                              "months": months, "n_bars": len(d),
-                             "verdicts": verdicts}, fh)
-            print(f"[collect {k}/{len(pairs)}] {symbol}: {len(cands)} candidates -> "
-                  f"{len(verdicts)} verdicts in {time.time() - t0:.0f}s", flush=True)
+                             "verdicts_by_horizon": merged}, fh)
+            counts = ", ".join(f"{h}:{len(merged.get(h, {}))}" for h in horizons)
+            print(f"[collect {k}/{len(pairs)}] {symbol}: {len(cands)} candidates, "
+                  f"queried {','.join(missing)} in {time.time() - t0:.0f}s ({counts})",
+                  flush=True)
     print(f"[collect] done -> {CACHE_DIR}")
 
 
@@ -166,7 +213,7 @@ def config_overrides(overrides: dict):
 
 def evaluate(pairs, months: int, variant_names) -> pd.DataFrame:
     start, end = _window(months)
-    loaded = []
+    loaded = []  # (symbol, cls, df, {horizon: {pos: verdict}})
     with get_conn() as conn:
         for symbol, cls in pairs:
             path = _cache_path(symbol, months)
@@ -178,27 +225,40 @@ def evaluate(pairs, months: int, variant_names) -> pd.DataFrame:
             if len(df) < 500:
                 print(f"[eval] {symbol}: only {len(df)} rows, skipping", flush=True)
                 continue
-            with open(path, "rb") as fh:
-                blob = pickle.load(fh)
-            loaded.append((symbol, cls, df, blob["verdicts"]))
+            vbs = _load_cache(path)
+            if not vbs:
+                print(f"[eval] {symbol}: cache unreadable, skipping", flush=True)
+                continue
+            loaded.append((symbol, cls, df, vbs))
     if not loaded:
         print("[eval] nothing cached — nothing to do")
         return pd.DataFrame()
-    print(f"[eval] {len(loaded)} symbols with cached verdicts")
+    horizons_avail = sorted({h for *_, vbs in loaded for h in vbs})
+    print(f"[eval] {len(loaded)} symbols cached; horizons available: "
+          f"{', '.join(horizons_avail)}")
 
     rows = []
     details = {}
     for name in variant_names:
         overrides = VARIANTS[name]
+        label = overrides.get("BRAIN_LABEL_HORIZON", config.BRAIN_LABEL_HORIZON)
         t0 = time.time()
         results = []
+        skipped = 0
         with config_overrides(overrides):
-            for symbol, cls, df, verdicts in loaded:
+            for symbol, cls, df, vbs in loaded:
+                verdicts = vbs.get(label)
+                if verdicts is None:
+                    skipped += 1
+                    continue
                 bt = SymbolBacktester(symbol, cls, verdict_override=verdicts)
                 res = bt.run(df)
                 for tr in res.trades:
                     tr.asset_class = cls
                 results.append(res)
+        if skipped:
+            print(f"[eval] {name}: {skipped} symbols lack the '{label}' label "
+                  f"(run --collect with the new code first)", flush=True)
         all_trades = [t for r in results for t in r.trades]
         df_tr = trades_to_frame(all_trades)
         stats = perf_stats(df_tr, config.BACKTEST_INITIAL_CAPITAL)

@@ -4,10 +4,10 @@ Methodology notes (deliberately honest):
   - Decisions are made on bar-close features; fills happen at the NEXT bar's
     open plus costs. No same-bar entry.
   - Brain recalls use the memory's look-ahead guard (neighbor ts <= decision
-    time - MEMORY_MIN_AGE_MINUTES), so every verdict is computable from
-    information that genuinely existed at decision time. The encoder's
-    z-scaler is fitted on full history (unsupervised, second-order leakage;
-    documented).
+    time - (label_bars + 1) hours; the guard scales with the active label
+    horizon), so every verdict is computable from information that genuinely
+    existed at decision time. The encoder's z-scaler is fitted on full
+    history (unsupervised, second-order leakage; documented).
   - Brain queries are batched per chunk (encode locally, query Qdrant in
     groups of 64) so a multi-year run takes minutes, not days. Some chunk
     queries are wasted on bars that turn out to be inside an open trade —
@@ -150,44 +150,63 @@ class SymbolBacktester:
         # sweep mode: precomputed {position: verdict} — no encoder/Qdrant needed
         self.verdict_override = verdict_override
 
-    def _batch_verdicts(self, d: pd.DataFrame, positions: list[int]) -> dict:
-        """Vectorized brain for a list of positional indices. Returns
-        {position: verdict_dict}. No iterrows: numpy all the way."""
+    def _batch_verdicts(self, d: pd.DataFrame, positions: list[int],
+                        label_horizons: tuple = None) -> dict:
+        """Vectorized brain for a list of positional indices. No iterrows.
+
+        Single horizon (default: config.BRAIN_LABEL_HORIZON) returns
+        {position: verdict_dict}. Multiple horizons return
+        {horizon: {position: verdict_dict}} (sweep collect mode).
+
+        The look-ahead guard SCALES with the label: horizon h only sees
+        neighbors at least (bars(h) + 1) hours old, because that outcome
+        was not knowable earlier. Each horizon gets its own queries so the
+        guard is exact, never approximated."""
+        horizons = tuple(label_horizons or (config.BRAIN_LABEL_HORIZON,))
+        multi = len(horizons) > 1
         rows = d.iloc[positions]
         vecs = self.encoder.transform(rows[list(VectorEncoder.VECTOR_FEATURES)])
-        # epoch-second cutoffs, vectorized (ns -> s), minus the min-age guard
-        ts_sec = (rows["timestamp"].astype("int64").to_numpy() // 10**9
-                  - config.MEMORY_MIN_AGE_MINUTES * 60)
+        # epoch-second decision times, vectorized (ns -> s)
+        ts_sec = rows["timestamp"].astype("int64").to_numpy() // 10**9
         pos_arr = np.asarray(positions)
-        out = {}
+        out = {h: {} for h in horizons} if multi else {}
         for start in range(0, len(pos_arr), BATCH):
             vsub = vecs[start:start + BATCH]
-            reqs = [
-                QueryRequest(
-                    query=v.tolist(), limit=config.MEMORY_NEIGHBORS,
-                    filter=Filter(must=[FieldCondition(
-                        key="ts", range=Range(lte=int(cut)))]),
-                    with_payload=True)
-                for v, cut in zip(vsub, ts_sec[start:start + BATCH])
-            ]
-            responses = None
-            for attempt in range(1, QDRANT_RETRIES + 1):
-                try:
-                    responses = self.qc.query_batch_points(
-                        collection_name=self.collection, requests=reqs)
-                    break
-                except Exception as exc:
-                    if attempt == QDRANT_RETRIES:
-                        raise RuntimeError(
-                            f"Qdrant batch query failed {QDRANT_RETRIES}x "
-                            f"({self.symbol}, {len(reqs)} queries): {exc}") from exc
-                    logger.warning("Qdrant batch attempt %d failed (%s); retrying",
-                                   attempt, exc)
-                    time.sleep(2 * attempt)
-            for pos, resp in zip(pos_arr[start:start + BATCH], responses):
-                neigh = [(p.score, p.payload.get("fwd"), p.payload.get("ts"),
-                          p.payload.get("symbol")) for p in resp.points]
-                out[int(pos)] = verdict_from_neighbors(neigh)
+            tsub = ts_sec[start:start + BATCH]
+            psub = pos_arr[start:start + BATCH]
+            for h in horizons:
+                guard = (config.BRAIN_LABEL_BARS[h] + 1) * 3600
+                key = config.BRAIN_LABEL_PAYLOAD_KEY[h]
+                reqs = [
+                    QueryRequest(
+                        query=v.tolist(), limit=config.MEMORY_NEIGHBORS,
+                        filter=Filter(must=[FieldCondition(
+                            key="ts", range=Range(lte=int(cut - guard)))]),
+                        with_payload=True)
+                    for v, cut in zip(vsub, tsub)
+                ]
+                responses = None
+                for attempt in range(1, QDRANT_RETRIES + 1):
+                    try:
+                        responses = self.qc.query_batch_points(
+                            collection_name=self.collection, requests=reqs)
+                        break
+                    except Exception as exc:
+                        if attempt == QDRANT_RETRIES:
+                            raise RuntimeError(
+                                f"Qdrant batch query failed {QDRANT_RETRIES}x "
+                                f"({self.symbol}, {len(reqs)} queries): {exc}") from exc
+                        logger.warning("Qdrant batch attempt %d failed (%s); retrying",
+                                       attempt, exc)
+                        time.sleep(2 * attempt)
+                target = out[h] if multi else out
+                for pos, resp in zip(psub, responses):
+                    neigh = []
+                    for p in resp.points:
+                        pl = p.payload or {}
+                        neigh.append((p.score, pl.get(key), pl.get("ts"),
+                                      pl.get("symbol")))
+                    target[int(pos)] = verdict_from_neighbors(neigh)
         return out
 
     def run(self, data: pd.DataFrame) -> SymbolResult:
