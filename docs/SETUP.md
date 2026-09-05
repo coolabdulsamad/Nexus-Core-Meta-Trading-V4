@@ -91,18 +91,30 @@ docker ps        # expect nexus_v4_db and nexus_v4_qdrant, both healthy
 
 ## 6. Apply the database schema
 
-Git Bash (installed with Git) — right-click the repo folder →
-*Git Bash Here*:
+> Note: the very **first** `docker compose up -d` applies `schema.sql`
+> automatically (it's mounted into the DB's init folder). You only need
+> this step to re-apply the schema or run later migrations.
+
+PowerShell (native, recommended on Windows):
+
+```powershell
+.\scripts\setup_db.ps1
+```
+
+Git Bash — right-click the repo folder → *Git Bash Here*:
 
 ```bash
 bash scripts/setup_db.sh
 ```
 
-Or pure PowerShell:
+⚠️ Two Windows gotchas, already fixed in the repo (just `git pull`):
 
-```powershell
-docker exec -i nexus_v4_db psql -U nexus -d nexus_mt5 -v ON_ERROR_STOP=1 < database/schema.sql
-```
+- **`set: pipefail: invalid option name`** in Git Bash → the `.sh` file was
+  checked out with CRLF line endings. The repo's `.gitattributes` now pins
+  LF. After `git pull`, run `git add --renormalize .` once if it persists.
+- **`<` operator is reserved** → PowerShell does not support `<` input
+  redirection (that was CMD syntax). The correct PowerShell form is:
+  `Get-Content database/schema.sql -Raw | docker exec -i nexus_v4_db psql -U nexus -d nexus_mt5 -v ON_ERROR_STOP=1`
 
 ## 7. Prepare the MT5 terminal
 
@@ -154,3 +166,4 @@ python -m src.live.live_trader             # Phase 5: the actual bot
 | retcode 10027 when live | *Allow algorithmic trading* + green Algo Trading button |
 | docker won't start | Docker Desktop running? WSL2 enabled? |
 | psql: connection refused | `docker ps` — is `nexus_v4_db` healthy? connect with `-p 5544` (V4's port), not the default 5432 |
+| `set: pipefail` in Git Bash | CRLF checkout — `git pull` (`.gitattributes` pins LF), then `git add --renormalize .` |
