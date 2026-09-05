@@ -507,8 +507,7 @@ class LiveTrader:
                         pnl = estimate_pnl(pos, price, specs)
                 finalize_close(self.state, pos, exit_price=exit_price,
                                exit_time=exit_time, reason=reason, pnl=pnl)
-                return
-        # position is gone
+                return                          # position is gone
         self.state["positions"][str(pos.ticket)] = pos.to_dict()
 
     # ------------------------------------------------------------------
