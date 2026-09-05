@@ -184,6 +184,27 @@ the hour) so the brain's memory stays fresh:
 
 ---
 
+## 10. Phase 3 — build the brain's memory
+
+No MT5 needed for this — it reads TimescaleDB and writes Qdrant:
+
+```powershell
+# 1) Build one vector memory per asset class from the feature cache
+#    (only states with a KNOWN 4h outcome become cases)
+python -m src.memory.build_memory
+
+# 2) Acceptance: recall works, look-ahead guard holds, distributions sane
+python scripts/brain_sanity.py
+```
+
+Expected: per class, memory populated (hundreds of thousands of states),
+`0 look-ahead violations`, probability std > 0.005, and a quality
+distribution whose max sits in the ~0.35-0.55 band (the Alpaca edition's
+live maximum ever observed was 0.480 — a max near 1.0 would mean the
+calibration is broken).
+
+---
+
 ## Daily use (later phases)
 
 ```powershell

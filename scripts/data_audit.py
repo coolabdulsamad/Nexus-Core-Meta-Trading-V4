@@ -91,7 +91,8 @@ def audit_symbol(conn, symbol: str) -> Dict:
     # learns from (HISTORY_YEARS). A symbol whose broker history simply
     # starts later (e.g. XM's AUDUSD starts mid-2022) is not "dirty" -
     # it is complete for as long as the broker serves it.
-    window_start = max(first, last - pd.Timedelta(days=int(config.HISTORY_YEARS * 365.25)))
+    cutoff = last - pd.Timedelta(days=int(config.HISTORY_YEARS * 365.25))
+    window_start = first if first > cutoff else cutoff
     win = bars[bars["timestamp"] >= window_start]
 
     expected = _expected_hours(window_start, last, crypto)
