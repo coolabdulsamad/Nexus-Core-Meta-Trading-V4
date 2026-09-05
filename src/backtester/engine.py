@@ -136,7 +136,8 @@ class SymbolBacktester:
             responses = self.qc.query_batch_points(
                 collection_name=self.collection, requests=reqs)
             for idx, resp in zip(sub.index, responses):
-                neigh = [(p.score, p.payload.get("fwd")) for p in resp.points]
+                neigh = [(p.score, p.payload.get("fwd"), p.payload.get("ts"),
+                          p.payload.get("symbol")) for p in resp.points]
                 out[idx] = verdict_from_neighbors(neigh)
         return out
 

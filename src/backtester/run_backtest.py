@@ -94,7 +94,7 @@ def main():
         sym_class.update({s: sym_class.get(s, "forex") for s in args.symbols})
 
     end = pd.Timestamp.utcnow().tz_localize(None)
-    start = end - pd.Timedelta(days=int(args.months * 30.44))
+    start = end - pd.DateOffset(months=args.months)
     print(f"Backtest window: {start.date()} -> {end.date()}  ({len(symbols)} symbols)")
 
     qc = get_qdrant()
