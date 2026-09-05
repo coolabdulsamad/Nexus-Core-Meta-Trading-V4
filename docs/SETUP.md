@@ -146,6 +146,44 @@ self-test complete: 40+ passed, a few warnings, 0 failed
 
 ---
 
+## 9. Phase 2 — build the data layer
+
+Run these on the Windows MT5 machine, with the terminal open and logged in:
+
+```powershell
+# 1) One-time deep backfill: ~3 years of H1 bars per symbol -> TimescaleDB
+#    (walks history month by month; safe to re-run, it resumes/ignores dupes)
+python -m src.ingestion.backfill_history
+
+# optional: deeper history or a subset while testing
+python -m src.ingestion.backfill_history --years 5
+python -m src.ingestion.backfill_history --symbols EURUSD XAUUSD BTCUSD
+
+# 2) Feature pump: tops up new bars, recomputes features on the FULL
+#    window, fills forward returns, refreshes the symbol registry.
+#    Run it once now to build feature_cache_1h ...
+python -m src.ingestion.run_pump
+
+# 3) Audit what we stored (runs anywhere, DB only)
+python scripts/data_audit.py
+```
+
+Expected: the audit prints every symbol at ~99%+ completeness with few
+gaps and outliers, and writes `reports\spread_stats.json` (the per-symbol
+spread distributions the Phase-4 backtester uses for honest costs).
+
+After that, schedule the pump hourly (Task Scheduler, run at e.g. :05 past
+the hour) so the brain's memory stays fresh:
+
+```powershell
+# Task Scheduler action (adjust paths):
+#   Program: C:\...\Nexus-Core-Meta-Trading-V4\.venv\Scripts\python.exe
+#   Args:    -m src.ingestion.run_pump
+#   Start in: C:\...\Nexus-Core-Meta-Trading-V4
+```
+
+---
+
 ## Daily use (later phases)
 
 ```powershell
