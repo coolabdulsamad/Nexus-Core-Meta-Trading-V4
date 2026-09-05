@@ -118,27 +118,30 @@ class SymbolBacktester:
 
     def _batch_verdicts(self, d: pd.DataFrame, positions: list[int]) -> dict:
         """Vectorized brain for a list of positional indices. Returns
-        {position: verdict_dict}."""
+        {position: verdict_dict}. No iterrows: numpy all the way."""
         rows = d.iloc[positions]
         vecs = self.encoder.transform(rows[list(VectorEncoder.VECTOR_FEATURES)])
+        # epoch-second cutoffs, vectorized (ns -> s), minus the min-age guard
+        ts_sec = (rows["timestamp"].astype("int64").to_numpy() // 10**9
+                  - config.MEMORY_MIN_AGE_MINUTES * 60)
+        pos_arr = np.asarray(positions)
         out = {}
-        for start in range(0, len(rows), BATCH):
-            sub = rows.iloc[start:start + BATCH]
+        for start in range(0, len(pos_arr), BATCH):
             vsub = vecs[start:start + BATCH]
-            reqs = []
-            for (_, row), v in zip(sub.iterrows(), vsub):
-                cutoff = int((row["timestamp"] - pd.Timedelta(
-                    minutes=config.MEMORY_MIN_AGE_MINUTES)).timestamp())
-                reqs.append(QueryRequest(
+            reqs = [
+                QueryRequest(
                     query=v.tolist(), limit=config.MEMORY_NEIGHBORS,
-                    filter=Filter(must=[FieldCondition(key="ts", range=Range(lte=cutoff))]),
-                    with_payload=True))
+                    filter=Filter(must=[FieldCondition(
+                        key="ts", range=Range(lte=int(cut)))]),
+                    with_payload=True)
+                for v, cut in zip(vsub, ts_sec[start:start + BATCH])
+            ]
             responses = self.qc.query_batch_points(
                 collection_name=self.collection, requests=reqs)
-            for idx, resp in zip(sub.index, responses):
+            for pos, resp in zip(pos_arr[start:start + BATCH], responses):
                 neigh = [(p.score, p.payload.get("fwd"), p.payload.get("ts"),
                           p.payload.get("symbol")) for p in resp.points]
-                out[idx] = verdict_from_neighbors(neigh)
+                out[int(pos)] = verdict_from_neighbors(neigh)
         return out
 
     def run(self, data: pd.DataFrame) -> SymbolResult:
@@ -152,6 +155,8 @@ class SymbolBacktester:
         d["bar_range"] = d["high"] - d["low"]
 
         ts_idx = pd.DatetimeIndex(d["timestamp"])
+        if ts_idx.tz is None:  # DB returns tz-aware; never crash on naive frames
+            ts_idx = ts_idx.tz_localize("UTC")
         opens = d["open"].to_numpy(); highs = d["high"].to_numpy()
         lows = d["low"].to_numpy(); closes = d["close"].to_numpy()
         sprs = d["spread_price"].to_numpy()
@@ -162,13 +167,15 @@ class SymbolBacktester:
         n = len(d)
 
         flat_until = 0
-        no_entry_until = pd.Timestamp.min   # loss cooldown horizon
+        no_entry_until = pd.Timestamp("1970-01-01", tz="UTC")  # loss cooldown horizon
         stop_times: list[pd.Timestamp] = []  # recent stop-outs (repeat-loss rule)
         verdicts: dict[int, dict] = {}
+        chunk_hi = -1  # verdict cache covers [i, chunk_hi); refilled once per window
         i = 0
         while i < n - 1:
-            # refill verdict cache for the window ahead (cheap gates only)
-            if i not in verdicts:
+            # refill verdict cache ONCE per CHUNK window (cheap gates only);
+            # non-candidate bars inside the window simply have no verdict
+            if i >= chunk_hi:
                 c_end = min(i + CHUNK, n - 1)
                 cands = [
                     j for j in range(i, c_end)
@@ -178,9 +185,9 @@ class SymbolBacktester:
                              and np.isfinite(med20[j]) and med20[j] > 0
                              and sprs[j] > config.SPREAD_MAX_MULT_OF_MEDIAN * med20[j])
                 ]
-                if cands:
-                    verdicts.update(self._batch_verdicts(d, cands))
-                    funnel.brain_called += len(cands)
+                verdicts = self._batch_verdicts(d, cands) if cands else {}
+                funnel.brain_called += len(cands)
+                chunk_hi = c_end
 
             funnel.bars += 1
             if i < flat_until:

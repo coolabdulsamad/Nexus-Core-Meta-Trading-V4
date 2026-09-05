@@ -93,7 +93,7 @@ def main():
     if args.symbols:
         sym_class.update({s: sym_class.get(s, "forex") for s in args.symbols})
 
-    end = pd.Timestamp.utcnow().tz_localize(None)
+    end = pd.Timestamp.now(tz="UTC")
     start = end - pd.DateOffset(months=args.months)
     print(f"Backtest window: {start.date()} -> {end.date()}  ({len(symbols)} symbols)")
 
