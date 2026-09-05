@@ -111,25 +111,32 @@ positive, we tune in Phase 7 before ever discussing live money.
 
 ---
 
-## Phase 5 — Live MT5 trader
+## Phase 5 — Live MT5 trader ✅ (built; demo-only by verdict)
 
 **Goal:** the real-time engine. First on a **demo account**, `DRY_RUN=false`.
+
+> **Status note (post-4c):** Phases 4/4b/4c found no tradable edge after
+> costs (best variant PF 0.78). Phase 5 therefore runs as **plumbing
+> validation on demo** — the execution stack must earn trust in the real
+> world regardless of which brain eventually drives it. No live money
+> until an edge is proven (Phase 7).
 
 Steps:
 1. `src/live/live_trader.py` — main loop on the hourly bar close:
    refresh features → brain query → entry gate chain (quality, session,
-   spread, cooldown, sentiment) → portfolio risk engine → size & send.
+   spread, cooldown, sentiment) → portfolio risk engine → size & send. ✅
 2. Portfolio risk engine — per-currency net risk cap 2.5%, total open risk
-   cap 5%, max 5 positions. This is the big new shield vs the Alpaca edition.
+   cap 5%, max 5 positions. This is the big new shield vs the Alpaca edition. ✅
 3. Exit stack (ported + MT5-native, via `TRADE_ACTION_SLTP` and partial
    closes): scale-outs ⅓ @ +1/+2 ATR, SL ratchet to lock +0.5 ATR,
-   trailing stop, retracement guard, flip-exit, 16-bar time stop.
+   trailing stop, retracement guard, flip-exit, 16-bar time stop. ✅
 4. Reconcile-on-start: adopt positions the broker already has (magic match),
-   never duplicate, never fight manual trades (different magic).
-5. Friday flatten (20:00 UTC) and rollover blackout.
+   never duplicate, never fight manual trades (different magic). ✅
+5. Friday flatten (20:00 UTC) and rollover blackout. ✅
 
-**Acceptance:** ≥2 weeks on demo with Telegram heartbeats, zero reconcile
-errors, live behavior matching backtest expectations within noise.
+**Acceptance:** `python scripts/demo_smoke.py` all-PASS (see SETUP 12b),
+then ≥2 weeks on demo with Telegram heartbeats, zero reconcile errors,
+live behavior matching backtest expectations within noise.
 
 ---
 

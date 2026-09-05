@@ -357,6 +357,95 @@ symbols, before Phase 5 goes beyond demo.
 
 ---
 
+## 12. Phase 5 — live engine (DEMO ONLY)
+
+**Read this first.** Phases 4 / 4b / 4c all returned the same verdict:
+the CBR brain has **no proven edge after costs** on this universe (best
+sweep variant PF 0.78). Phase 5 therefore ships as what it was sanctioned
+as — **execution plumbing validation on the demo account**, not a profit
+deployment. The orders, risk engine, exit stack, reconciliation and
+journaling must prove themselves in the real world no matter which brain
+eventually drives them.
+
+What was built:
+
+- `src/live/live_trader.py` — the engine: hourly bar-close entries through
+  the exact backtest gate chain, 60-second position management, daily
+  guards, circuit breakers, Telegram heartbeats/EOD, daily maintenance.
+- `src/live/position_manager.py` — the full exit stack live: scale-outs,
+  ratchet, trailing, retracement, time partial/stop, flip exits, Friday
+  flatten. Real positions carry broker-side SL/TP from second zero.
+- `src/live/risk_engine.py` — per-currency net risk cap (2.5%), total open
+  risk cap (5%), max 5 positions, daily loss/profit guards, drawdown breaker.
+- `src/live/reconciler.py` — the broker is the only truth: adopts positions
+  found at startup, journals closes that happened while the engine was down
+  (exact pnl from deal history).
+- `src/live/journal.py` + `src/live/state.py` — every decision journaled to
+  the `trades` table; working state in `state/live_state.json` (atomic,
+  human-readable).
+- `scripts/demo_smoke.py` — the acceptance test below.
+- `scripts/oos_split_check.py` — the XAUUSD out-of-sample stability check.
+
+### 12a. Prerequisite: enable algo trading
+
+In the MT5 terminal: **Tools → Options → Expert Advisors → "Allow
+algorithmic trading"** ✓, and the **"Algo Trading" toolbar button must be
+green**. The pump logs showed it disabled — data work doesn't care, but
+every order will be rejected (retcode 10027) until it is on.
+
+### 12b. Acceptance test (zero real orders)
+
+```powershell
+git pull
+python scripts/demo_smoke.py
+```
+
+Expected: `SMOKE TEST: ALL CHECKS PASSED`. The test connects, verifies the
+universe/encoders/memory/journal, asks the brain for live verdicts, and
+then runs a **virtual trade through the real engine code** (entry → exit
+stack → time-stop close → journal). Two rows appear in the `trades` table
+flagged `DRY_RUN` — that is the journal doing its job, not an error.
+
+### 12c. Run the engine in DRY_RUN
+
+```powershell
+python -m src.live.live_trader            # Ctrl+C stops cleanly
+```
+
+`DRY_RUN=true` in `.env` means **no order ever reaches the broker**:
+entries fill virtually at the live tick and are managed by the same exit
+stack. Leave it running for at least a week. Watch for: Telegram
+heartbeats (~30 min), entry/exit cards, `state/live_state.json` updating,
+and `SELECT * FROM trades ORDER BY id DESC;` showing the journal.
+
+### 12d. Only after a clean DRY_RUN week — real orders on DEMO
+
+```powershell
+# .env:  DRY_RUN=false
+python scripts/demo_smoke.py --real-order   # one min-size order, opened+closed
+python -m src.live.live_trader
+```
+
+This is still the **demo account**. "Real orders" here means real broker
+plumbing (fills, SL/TP, partial closes), not real money.
+
+### 12e. The XAUUSD question
+
+XAUUSD was the only symbol positive in BOTH independent sweeps (PF 1.18 →
+1.23). Before anyone designs around it, check time-stability (seconds,
+reuses the sweep caches):
+
+```powershell
+python scripts/oos_split_check.py --symbols XAUUSD --variants l24_tight,baseline
+```
+
+`STABLE` (PF > 1.0 in BOTH halves) keeps the conversation alive;
+`UNSTABLE` closes it. Even a STABLE result is a post-hoc, single-symbol
+find with a wide confidence interval — it would justify a focused
+research phase, never a shortcut to live money.
+
+---
+
 ## Daily use (later phases)
 
 ```powershell
