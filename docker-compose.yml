@@ -14,7 +14,8 @@ services:
       POSTGRES_USER: ${DB_USER:-nexus}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-change_me_strong_password}
     ports:
-      - "${DB_PORT:-5432}:5432"
+      # 5544 on the host (the Alpaca edition's nexus_timescaledb owns 5432)
+      - "${DB_PORT:-5544}:5432"
     volumes:
       - tsdb_data:/var/lib/postgresql/data
       - ./database/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
@@ -30,8 +31,9 @@ services:
     container_name: nexus_v4_qdrant
     restart: unless-stopped
     ports:
-      - "${QDRANT_PORT:-6333}:6333"
-      - "6334:6334"
+      # 6644/6645 on the host (the Alpaca edition's nexus_qdrant owns 6333/6334)
+      - "${QDRANT_PORT:-6644}:6333"
+      - "6645:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:

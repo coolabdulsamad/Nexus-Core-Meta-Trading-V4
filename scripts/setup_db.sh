@@ -10,7 +10,7 @@ if [ -f .env ]; then
 fi
 
 DB_HOST="${DB_HOST:-localhost}"
-DB_PORT="${DB_PORT:-5432}"
+DB_PORT="${DB_PORT:-5544}"   # 5432 is the Alpaca edition's database
 DB_NAME="${DB_NAME:-nexus_mt5}"
 DB_USER="${DB_USER:-nexus}"
 
