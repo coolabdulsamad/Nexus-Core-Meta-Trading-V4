@@ -303,6 +303,60 @@ a session/spread experiment needs a fresh `--collect`.
 
 ---
 
+## 11c. Phase 4c — multi-horizon brain labels
+
+Phase 4b proved every variant of the 4h brain loses after costs — and that
+longer holds lose LESS (PF: 16 bars 0.78 > 6 bars 0.67 > 4 bars 0.65).
+So the label horizon itself is the prime suspect: the brain predicts 4h
+ahead, but whatever weak predictability exists lives further out. Phase 4c
+rebuilds the memory with **three outcome labels per state** (4h / 12h /
+24h) and lets the sweep trade on any of them.
+
+One-time upgrade (your existing 4b verdict caches are kept and reused):
+
+```powershell
+git pull
+
+# 1) Add the two label columns to the database (one command)
+Get-Content database/migrations/001_multi_horizon_labels.sql -Raw | docker exec -i nexus_v4_db psql -U nexus -d nexus_mt5 -v ON_ERROR_STOP=1
+
+# 2) Refill the labels for ALL history (pump recomputes the full window)
+#    Needs the MT5 terminal running. Minutes, not hours.
+python -m src.ingestion.run_pump
+
+# 3) Rebuild the memory so every state carries fwd_4h / fwd_12h / fwd_24h
+#    (recreates the Qdrant collections; same order of time as Phase 3)
+python -m src.memory.build_memory
+
+# 4) Collect verdicts for the two NEW horizons only — your existing 4h
+#    caches are reused untouched. One query per candidate per horizon
+#    (each with its own look-ahead guard), so expect roughly 2x the
+#    Phase 4b collect time. Resumable, as before.
+python scripts/sweep_configs.py --collect --months 24
+
+# 5) Sweep — the six new label variants plus the old twelve
+python scripts/sweep_configs.py --eval --months 24
+```
+
+New variants: `label12h`, `label24h` (same trading config, brain trades on
+longer outcomes), `l12_h12` / `l24_h24` (hold aligned to the label), and
+`l12_tight` / `l24_tight` (label x the best 4b variant).
+
+Honesty notes baked into the code:
+
+- Each horizon is recalled with its OWN look-ahead guard — a 24h outcome
+  is only knowable 25h later, so 24h verdicts never peek at fresher
+  neighbors. This is stricter than most published "multi-horizon" work.
+- The slippage units bug from 4b is fixed (0.5bp per fill was effectively
+  0 before). Baseline numbers in the next sweep will look a few percent
+  WORSE than the 4b table — that is the truth getting sharper, not a
+  regression.
+
+Decision rule is unchanged: **PF > 1.0 after costs**, broad across
+symbols, before Phase 5 goes beyond demo.
+
+---
+
 ## Daily use (later phases)
 
 ```powershell
