@@ -444,6 +444,33 @@ python scripts/oos_split_check.py --symbols XAUUSD --variants l24_tight,baseline
 find with a wide confidence interval — it would justify a focused
 research phase, never a shortcut to live money.
 
+### 12f. The strict holdout test (only if 12e says STABLE)
+
+The split check re-measures the same window that crowned the variant, so
+two in-sample contaminations remain: l24_tight was SELECTED on that data
+(winner-of-18-variants bias), and the encoder's z-scaler was fit on full
+history including the "second half" (documented in engine.py). The
+holdout test removes both:
+
+- **Stage A** re-ranks all 18 variants using only pre-cutoff cached
+  verdicts — was l24_tight's promise visible WITHOUT the last 6 months?
+- **Stage B** rebuilds the metal memory + encoder from states at/before
+  the cutoff ONLY (separate collection `market_memory_60m_metal_holdout`
+  + `models/encoder_metal_holdout.pkl`; production memory untouched) and
+  trades the holdout months against that frozen brain.
+
+```powershell
+python scripts/holdout_check.py                      # XAUUSD, 6-month holdout
+python scripts/holdout_check.py --holdout-months 4   # shorter/longer holdout
+python scripts/holdout_check.py --cleanup            # delete holdout artifacts after
+```
+
+`HOLDOUT PASS` (PF > 1.0 on ≥30 trades the brain never saw) keeps a
+focused gold-research phase alive; `HOLDOUT FAIL` closes the XAUUSD
+question. Either way the next validation is forward (12c/12d), never a
+shortcut to live money. Run it soon after the sweep collect — Stage A
+skips itself if the frame has drifted from the cache.
+
 ---
 
 ## Daily use (later phases)

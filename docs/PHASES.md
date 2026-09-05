@@ -120,6 +120,12 @@ positive, we tune in Phase 7 before ever discussing live money.
 > validation on demo** — the execution stack must earn trust in the real
 > world regardless of which brain eventually drives it. No live money
 > until an edge is proven (Phase 7).
+>
+> **Update (2026-09-05):** the half-split check returned STABLE for
+> XAUUSD l24_tight (PF 1.73 → 1.31, expectancy +0.185R in BOTH halves) —
+> the first stable positive of the project. It is still a post-hoc,
+> single-symbol find; the frozen-brain holdout test (SETUP 12f) is the
+> next gate before any gold-focused research phase.
 
 Steps:
 1. `src/live/live_trader.py` — main loop on the hourly bar close:
