@@ -8,10 +8,14 @@ place: timestamp (UTC), open, high, low, close, volume, spread_points.
 
 from datetime import datetime
 from typing import List, Optional
+import warnings
 
 import pandas as pd
 
 from src.storage.db import get_conn
+
+# psycopg2 connections work fine with pd.read_sql; silence the spam.
+warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy")
 
 
 def load_bars(

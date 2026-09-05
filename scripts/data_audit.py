@@ -20,21 +20,46 @@ import argparse
 import json
 import os
 import sys
+import warnings
 from datetime import datetime, timezone
 from typing import Dict, List
 
 import numpy as np
 import pandas as pd
 
+# psycopg2 connections work fine with pd.read_sql; silence the spam.
+warnings.filterwarnings("ignore", message="pandas only supports SQLAlchemy")
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from config.settings import config  # noqa: E402
 from src.storage.db import get_conn  # noqa: E402
 from src.utils.logger import setup_logger  # noqa: E402
 
 logger = setup_logger("audit", "logs/audit.log")
 
-CRYPTO_24_7 = {"BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD",
-               "LTCUSD", "BCHUSD", "ADAUSD", "DOGEUSD"}
+
+def classify(symbol: str) -> str:
+    if symbol in config.METALS_POOL:
+        return "metal"
+    if symbol in config.CRYPTO_POOL:
+        return "crypto"
+    return "forex"
+
+
+# Per-class reality, learned from the broker's own feed (XM Global):
+# - forex: 24h Mon-Fri, closed on a handful of holidays (Xmas, New Year,
+#   Good Friday) -> ~2-3 holes > 3h per year are NORMAL
+# - metal: daily ~1h break (sub-3h, invisible to the gap counter) plus
+#   MORE holidays than forex -> completeness vs naive weekday-hours sits
+#   around 94-95% on a COMPLETE feed; holiday gaps ~9-10/year
+# - crypto: broker CFDs are not truly 24/7 (weekly maintenance windows)
+#   -> ~97-98% vs a naive 24/7 expectation is a complete feed
+CLASS_RULES = {
+    "forex":  {"min_completeness": 0.97, "max_gaps_per_year": 3},
+    "metal":  {"min_completeness": 0.90, "max_gaps_per_year": 12},
+    "crypto": {"min_completeness": 0.95, "max_gaps_per_year": 8},
+}
 
 
 def _expected_hours(first: pd.Timestamp, last: pd.Timestamp, crypto: bool) -> int:
@@ -58,18 +83,27 @@ def audit_symbol(conn, symbol: str) -> Dict:
 
     bars["timestamp"] = pd.to_datetime(bars["timestamp"], utc=True)
     first, last = bars["timestamp"].iloc[0], bars["timestamp"].iloc[-1]
-    crypto = symbol in CRYPTO_24_7
+    asset_class = classify(symbol)
+    crypto = asset_class == "crypto"
+    span_years = max((last - first).total_seconds() / (365.25 * 86400), 0.1)
 
-    expected = _expected_hours(first, last, crypto)
-    completeness = len(bars) / expected if expected else 1.0
+    # Completeness is judged on the TRAILING window the brain actually
+    # learns from (HISTORY_YEARS). A symbol whose broker history simply
+    # starts later (e.g. XM's AUDUSD starts mid-2022) is not "dirty" -
+    # it is complete for as long as the broker serves it.
+    window_start = max(first, last - pd.Timedelta(days=int(config.HISTORY_YEARS * 365.25)))
+    win = bars[bars["timestamp"] >= window_start]
 
-    # --- gaps: holes > 3h inside trading time ---
-    diffs = bars["timestamp"].diff().dt.total_seconds().div(3600)
+    expected = _expected_hours(window_start, last, crypto)
+    completeness = len(win) / expected if expected else 1.0
+
+    # --- gaps: holes > 3h inside trading time (trailing window only) ---
+    diffs = win["timestamp"].diff().dt.total_seconds().div(3600)
     gap_mask = diffs > 3
     if not crypto:
         # ignore the natural weekend hole (Fri->Mon ~ 72h)
-        gap_mask &= bars["timestamp"].dt.dayofweek != 6  # hole ENDING on Sunday
-        gap_mask &= ~((bars["timestamp"].dt.dayofweek == 0)
+        gap_mask &= win["timestamp"].dt.dayofweek != 6  # hole ENDING on Sunday
+        gap_mask &= ~((win["timestamp"].dt.dayofweek == 0)
                       & (diffs <= 72))                   # normal Mon open
     gaps = int(gap_mask.sum())
 
@@ -103,6 +137,9 @@ def audit_symbol(conn, symbol: str) -> Dict:
 
     return {
         "symbol": symbol,
+        "asset_class": asset_class,
+        "years": round(span_years, 2),
+        "window_years": round(min(span_years, float(config.HISTORY_YEARS)), 2),
         "status": "STALE" if stale else "OK",
         "first": str(first), "last": str(last),
         "bars": int(len(bars)), "expected": int(expected),
@@ -115,7 +152,8 @@ def audit_symbol(conn, symbol: str) -> Dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="V4 data-quality audit")
-    parser.add_argument("--min-completeness", type=float, default=0.95)
+    parser.add_argument("--min-completeness", type=float, default=None,
+                        help="override the per-class completeness floor")
     args = parser.parse_args()
 
     with get_conn() as conn:
@@ -128,7 +166,7 @@ def main() -> int:
         reports = [audit_symbol(conn, s) for s in symbols]
 
     # --- console table ---
-    hdr = (f"{'symbol':<9} {'bars':>7} {'compl':>6} {'gaps':>5} "
+    hdr = (f"{'symbol':<9} {'class':<7} {'bars':>7} {'compl':>6} {'gaps':>5} "
            f"{'outl':>5} {'age_h':>7}  status")
     print("\n" + hdr + "\n" + "-" * len(hdr))
     problems: List[str] = []
@@ -138,11 +176,18 @@ def main() -> int:
             print(f"{r['symbol']:<9} EMPTY")
             problems.append(r["symbol"])
             continue
-        print(f"{r['symbol']:<9} {r['bars']:>7} {r['completeness']:>6.1%} "
-              f"{r['gaps_over_3h']:>5} {r['outlier_bars']:>5} "
-              f"{r['age_hours']:>7}  {r['status']}")
-        if (r["completeness"] < args.min_completeness
-                or r["status"] != "OK" or r["gaps_over_3h"] > 10):
+        rules = CLASS_RULES[r["asset_class"]]
+        min_compl = (args.min_completeness
+                     if args.min_completeness is not None
+                     else rules["min_completeness"])
+        allowed_gaps = max(2, int(np.ceil(r["window_years"] * rules["max_gaps_per_year"])))
+        flag = (r["completeness"] < min_compl
+                or r["status"] != "OK"
+                or r["gaps_over_3h"] > allowed_gaps)
+        print(f"{r['symbol']:<9} {r['asset_class']:<7} {r['bars']:>7} "
+              f"{r['completeness']:>6.1%} {r['gaps_over_3h']:>5} "
+              f"{r['outlier_bars']:>5} {r['age_hours']:>7}  {r['status']}")
+        if flag:
             problems.append(r["symbol"])
         if r["spread_pct"]:
             spread_out[r["symbol"]] = r["spread_pct"]
@@ -157,7 +202,7 @@ def main() -> int:
 
     ok = len(reports) - len(problems)
     print(f"\nAudit: {ok}/{len(reports)} symbols clean "
-          f"(min completeness {args.min_completeness:.1%})")
+          f"(per-class floors: forex 97%, metal 90%, crypto 95%)")
     if problems:
         print("Attention needed: " + ", ".join(problems))
         return 1
