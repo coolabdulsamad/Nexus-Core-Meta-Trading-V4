@@ -37,10 +37,12 @@ def collection_name(asset_class: str) -> str:
 
 
 def get_qdrant() -> QdrantClient:
+    # timeout: filtered batch queries over ~1M points on Docker Desktop can
+    # take far longer than the 5s library default - give them real room.
     q = config.qdrant
     if q.url:
-        return QdrantClient(url=q.url, api_key=q.api_key or None)
-    return QdrantClient(host=q.host, port=q.port)
+        return QdrantClient(url=q.url, api_key=q.api_key or None, timeout=120)
+    return QdrantClient(host=q.host, port=q.port, timeout=120)
 
 
 def ensure_collection(client: QdrantClient, asset_class: str,

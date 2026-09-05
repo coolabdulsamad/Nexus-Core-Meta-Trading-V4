@@ -9,7 +9,7 @@ Methodology notes (deliberately honest):
     z-scaler is fitted on full history (unsupervised, second-order leakage;
     documented).
   - Brain queries are batched per chunk (encode locally, query Qdrant in
-    groups of 256) so a multi-year run takes minutes, not days. Some chunk
+    groups of 64) so a multi-year run takes minutes, not days. Some chunk
     queries are wasted on bars that turn out to be inside an open trade —
     harmless and much faster than per-bar round trips.
   - Loss cooldowns (post-stop ban, repeat-loss ban, flat-bars-after-close)
@@ -20,6 +20,7 @@ Methodology notes (deliberately honest):
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -36,8 +37,9 @@ from src.utils.logger import setup_logger
 
 logger = setup_logger("backtest.engine", "logs/backtest.log")
 
-BATCH = 256
+BATCH = 64    # queries per HTTP call (256-point batches time out on Docker Desktop)
 CHUNK = 2000  # bars per batching window
+QDRANT_RETRIES = 3
 ASIA_CCYS = ("AUD", "NZD", "JPY")
 
 
@@ -136,8 +138,20 @@ class SymbolBacktester:
                     with_payload=True)
                 for v, cut in zip(vsub, ts_sec[start:start + BATCH])
             ]
-            responses = self.qc.query_batch_points(
-                collection_name=self.collection, requests=reqs)
+            responses = None
+            for attempt in range(1, QDRANT_RETRIES + 1):
+                try:
+                    responses = self.qc.query_batch_points(
+                        collection_name=self.collection, requests=reqs)
+                    break
+                except Exception as exc:
+                    if attempt == QDRANT_RETRIES:
+                        raise RuntimeError(
+                            f"Qdrant batch query failed {QDRANT_RETRIES}x "
+                            f"({self.symbol}, {len(reqs)} queries): {exc}") from exc
+                    logger.warning("Qdrant batch attempt %d failed (%s); retrying",
+                                   attempt, exc)
+                    time.sleep(2 * attempt)
             for pos, resp in zip(pos_arr[start:start + BATCH], responses):
                 neigh = [(p.score, p.payload.get("fwd"), p.payload.get("ts"),
                           p.payload.get("symbol")) for p in resp.points]
