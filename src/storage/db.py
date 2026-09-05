@@ -17,7 +17,15 @@ from config.settings import config
 @contextmanager
 def get_conn():
     """Yield an autocommit-off connection; commit on clean exit."""
-    conn = psycopg2.connect(config.database.url)
+    db = config.database
+    if db.url:
+        conn = psycopg2.connect(db.url)          # explicit DATABASE_URL wins
+    else:
+        # keyword form: passwords with @ : / % need no URL-encoding
+        conn = psycopg2.connect(
+            host=db.host, port=db.port, user=db.user,
+            password=db.password, dbname=db.name,
+        )
     try:
         yield conn
         conn.commit()

@@ -44,22 +44,16 @@ from pydantic import BaseModel
 load_dotenv()
 
 
-def _database_url() -> str:
-    """DATABASE_URL wins if set; otherwise compose from DB_* parts so the
-    .env file matches docker-compose.yml field for field."""
-    url = os.getenv("DATABASE_URL")
-    if url:
-        return url
-    user = os.getenv("DB_USER", "nexus")
-    pwd = os.getenv("DB_PASSWORD", "change_me_strong_password")
-    host = os.getenv("DB_HOST", "localhost")
-    port = os.getenv("DB_PORT", "5544")  # 5432 belongs to the Alpaca edition
-    name = os.getenv("DB_NAME", "nexus_mt5")
-    return f"postgresql://{user}:{pwd}@{host}:{port}/{name}"
-
-
 class DatabaseSettings(BaseModel):
-    url: str = _database_url()
+    # DATABASE_URL (if set) is used verbatim; otherwise the DB_* parts are
+    # passed to psycopg2 as SEPARATE keyword arguments - a password that
+    # contains @ : / % would corrupt a composed URL without percent-encoding.
+    url: str = os.getenv("DATABASE_URL", "")
+    host: str = os.getenv("DB_HOST", "localhost")
+    port: int = int(os.getenv("DB_PORT", "5544"))  # 5432 belongs to the Alpaca edition
+    user: str = os.getenv("DB_USER", "nexus")
+    password: str = os.getenv("DB_PASSWORD", "change_me_strong_password")
+    name: str = os.getenv("DB_NAME", "nexus_mt5")
 
 
 class QdrantSettings(BaseModel):
