@@ -173,7 +173,8 @@ class SymbolBacktester:
                     j for j in range(i, c_end)
                     if np.isfinite(atrs[j]) and atrs[j] > 0
                     and _session_ok(ts_idx[j], self.symbol)
-                    and not (np.isfinite(med20[j]) and med20[j] > 0
+                    and not (config.SPREAD_FILTER_ENABLED
+                             and np.isfinite(med20[j]) and med20[j] > 0
                              and sprs[j] > config.SPREAD_MAX_MULT_OF_MEDIAN * med20[j])
                 ]
                 if cands:
