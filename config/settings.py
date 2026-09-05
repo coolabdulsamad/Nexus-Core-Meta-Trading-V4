@@ -111,6 +111,16 @@ class GlobalConfig:
                    "LTCUSD", "BCHUSD", "ADAUSD", "DOGEUSD"]
     INDICES_POOL: list = []           # e.g. ["US30", "NAS100", "SPX500"] - enable deliberately
 
+    # ----- Broker naming aliases -----
+    # Some brokers rename instruments ENTIRELY (not just suffixes):
+    # XM calls gold "GOLD" and silver "SILVER". The resolver tries the
+    # canonical name first, then each alias in order, then suffix-stripped
+    # fuzzy matching. Keys are canonical pool names.
+    SYMBOL_ALIASES = {
+        "XAUUSD": ["GOLD", "XAU/USD", "XAUUSD_i"],
+        "XAGUSD": ["SILVER", "XAG/USD", "XAGUSD_i"],
+    }
+
     # ----- Universe management -----
     UNIVERSE_MODE = os.getenv("UNIVERSE_MODE", "manual")  # 'manual' = watch ALL active | 'auto' = daily top-N
     TOP_N_SYMBOLS = 6
