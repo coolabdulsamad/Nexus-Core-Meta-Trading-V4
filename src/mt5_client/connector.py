@@ -546,16 +546,19 @@ class MT5Connector:
         this position id, summed. Used by the reconciler to journal exits
         that happened while we were down (SL/TP fills, manual closes).
         Returns {'exit_price', 'exit_time', 'profit', 'volume_closed'} or
-        None when no deals are found in the lookback window."""
+        None when no deals are found for the position.
+
+        NOTE: history_deals_get(start, end, position=ticket) SILENTLY
+        ignores the position filter on live builds (observed on build 6182:
+        it returned the account's 100k balance deal, reporting equity as
+        trade profit). The exact overload is history_deals_get(position=...)
+        with NO dates; we also re-filter on position_id in Python as a
+        second guard. lookback_days is kept for call-site compatibility."""
         m = self._require()
-        from datetime import datetime, timedelta, timezone
-        end = datetime.now(timezone.utc)
-        start = end - timedelta(days=lookback_days)
-        deals = m.history_deals_get(start, end, position=ticket)
+        deals = m.history_deals_get(position=ticket)
         if not deals:
-            # older than the window: widen once before giving up
-            deals = m.history_deals_get(start - timedelta(days=330), end,
-                                        position=ticket)
+            return None
+        deals = [d for d in deals if int(d.position_id) == int(ticket)]
         if not deals:
             return None
         out_deals = [d for d in deals
