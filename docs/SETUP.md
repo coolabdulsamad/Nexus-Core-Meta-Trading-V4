@@ -418,7 +418,7 @@ stack. Leave it running for at least a week. Watch for: Telegram
 heartbeats (~30 min), entry/exit cards, `state/live_state.json` updating,
 and `SELECT * FROM trades ORDER BY id DESC;` showing the journal.
 
-### 12d. Only after a clean DRY_RUN week — real orders on DEMO
+### 12d. Real orders on DEMO (min size)
 
 ```powershell
 # .env:  DRY_RUN=false
@@ -428,6 +428,24 @@ python -m src.live.live_trader
 
 This is still the **demo account**. "Real orders" here means real broker
 plumbing (fills, SL/TP, partial closes), not real money.
+
+**Entries are intentionally rare.** The engine evaluates all 38 symbols
+once per closed hourly bar and the gate chain (conviction, agreement,
+quality, ADX, tape confirm, no-chase, tp-vs-spread) rejects almost
+everything — hours with zero entries are normal, days are possible. Every
+entry cycle logs one funnel line, e.g.:
+
+```
+entry cycle (bar 2026-09-07 14:00, broker UTC+3): 38 evaluated, 0 reached
+execution, 0 bars not published yet | rejects: conviction=21, quality=9, ...
+```
+
+and the Telegram heartbeat carries the same summary after `scan:`. If you
+see that line every hour, the engine is healthy — it is *choosing* not to
+trade. (First real run, 2026-09-07: a broker-time mismatch — MT5 stamps
+bars in server time, XM is UTC+2/+3 — made every bar look "not published
+yet" so no entry could ever fire; fixed by measuring the broker offset
+from a live tick each entry cycle.)
 
 ### 12e. The XAUUSD question
 
@@ -496,3 +514,6 @@ python -m src.live.live_trader             # Phase 5: the actual bot
 | docker won't start | Docker Desktop running? WSL2 enabled? |
 | psql: connection refused | `docker ps` — is `nexus_v4_db` healthy? connect with `-p 5544` (V4's port), not the default 5432 |
 | `set: pipefail` in Git Bash | CRLF checkout — `git pull` (`.gitattributes` pins LF), then `git add --renormalize .` |
+| `WinError 5 Access is denied` on `live_state.json` | transient Windows AV/indexer lock — `save_state` retries and falls back to a direct write; a lone WARNING is harmless (next cycle retries), a stream of them means something is holding `state/` open (close editors/OneDrive sync on that folder) |
+| hours pass with no entries | normal — gates are strict; check the hourly `entry cycle` funnel line or the Telegram heartbeat `scan:` summary. If `bars not published yet` is always 38, the broker-time offset failed to refresh (no fresh tick) — restart once the market is open |
+| Telegram `ConnectionResetError` WARNING | your router/ISP reset an idle connection; the retry succeeds. Only a final `gave up` ERROR means a message was lost |

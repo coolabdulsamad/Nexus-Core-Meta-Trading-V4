@@ -39,7 +39,10 @@ def send_telegram(message, kind: str = 'info'):
                 return True
             logger.warning(f"Telegram failed ({attempt}/{_MAX_ATTEMPTS}): {resp.status_code} {resp.text}")
         except Exception as e:
-            logger.error(f"Telegram error ({attempt}/{_MAX_ATTEMPTS}): {e}")
+            # transient connection resets self-heal on retry; only the final
+            # failure is an ERROR (keeps logs clean on flaky networks)
+            log = logger.error if attempt == _MAX_ATTEMPTS else logger.warning
+            log(f"Telegram error ({attempt}/{_MAX_ATTEMPTS}): {e}")
         if attempt < _MAX_ATTEMPTS:
             time.sleep(_BACKOFF * attempt)
 

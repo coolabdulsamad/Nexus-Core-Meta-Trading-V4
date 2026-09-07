@@ -126,6 +126,24 @@ positive, we tune in Phase 7 before ever discussing live money.
 > the first stable positive of the project. It is still a post-hoc,
 > single-symbol find; the frozen-brain holdout test (SETUP 12f) is the
 > next gate before any gold-focused research phase.
+>
+> **Update (2026-09-06):** holdout verdict — l24_tight **HOLDOUT FAIL**
+> (PF 0.69 on the frozen brain): the split-check edge was selection bias +
+> encoder leakage. Baseline PF 1.20 ≈ noise. No proven edge stands; the
+> demo soak proceeds as plumbing validation only.
+>
+> **Update (2026-09-07):** first real-order demo night exposed two live
+> bugs, both fixed and covered by `tests/test_phase5_hotfix_local.py`:
+> (1) `history_deals_get(start, end, position=ticket)` silently ignored
+> the position filter on build 6182 (reported the account's balance deal
+> as trade pnl) → position-only overload + Python-side id guard;
+> (2) MT5 bar timestamps are broker-server wall time (XM UTC+2/+3) while
+> entry scheduling used true UTC, so the just-closed bar never matched and
+> **no entry could ever fire** (10 cycles, 0 entries) → broker offset now
+> measured from a fresh tick each entry cycle, and the brain's look-ahead
+> guard uses the decision bar's own timestamp for exact backtest parity.
+> Also: entry cycles now log a one-line reject funnel + heartbeat `scan:`
+> summary, and state saves survive transient Windows file locks.
 
 Steps:
 1. `src/live/live_trader.py` — main loop on the hourly bar close:

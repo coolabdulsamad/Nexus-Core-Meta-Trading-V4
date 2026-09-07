@@ -78,6 +78,31 @@ class LiveTrader:
         self._retry_symbols: set[str] = set()
         self._maintenance_proc: Optional[subprocess.Popen] = None
         self._stop = False
+        # MT5 bar/tick timestamps are BROKER-SERVER wall time relabeled as UTC
+        # (get_bars docstring; XM runs EET/EEST = UTC+2/+3). Entry timing must
+        # work in that same frame or the just-closed bar never matches
+        # target_bar and NO entry can ever fire (observed 2026-09-07: 10h,
+        # 10 entry cycles, 0 entries, all symbols permanently "not_ready").
+        # Measured live each entry cycle so DST switches are picked up.
+        self._broker_offset_h = 0.0
+        self._last_scan = ""                        # one-line funnel summary
+
+    def _refresh_broker_offset(self, now: datetime) -> None:
+        """Whole-hour offset of broker server time vs true UTC, derived from
+        a fresh tick's server timestamp. Stale (weekend) ticks are skipped;
+        on total failure the previous value is kept."""
+        for sym in self.universe:
+            try:
+                tick = self.connector.get_tick(sym)
+            except Exception:
+                continue
+            t = getattr(tick, "time", 0) if tick is not None else 0
+            if not t:
+                continue
+            off = (float(t) - now.timestamp()) / 3600.0
+            if abs(off) <= 14:                    # fresh tick only
+                self._broker_offset_h = float(round(off))
+                return
 
     # ------------------------------------------------------------------
     # startup
@@ -134,8 +159,10 @@ class LiveTrader:
         try:
             bars = self.connector.get_bars(symbol, config.LIVE_BARS_WINDOW)
             if bars is not None and len(bars) >= MIN_BARS_FOR_FEATURES:
-                hour_start = _floor_hour(now)
-                # drop the still-forming bar (its timestamp == current hour)
+                hour_start = _floor_hour(
+                    now + timedelta(hours=self._broker_offset_h))
+                # drop the still-forming bar (its timestamp == current hour,
+                # in broker-server time, which is the frame bars live in)
                 if len(bars) and bars["timestamp"].iloc[-1] >= hour_start:
                     bars = bars.iloc[:-1]
                 specs = self.connector.symbol_specs(symbol)
@@ -162,8 +189,15 @@ class LiveTrader:
     def _entry_cycle(self, now: datetime, hour_start: datetime,
                      only_symbols: set[str] = None) -> None:
         self._frame_cache = {}
-        target_bar = pd.Timestamp(hour_start - timedelta(hours=1))
+        self._refresh_broker_offset(now)
+        # bar timestamps are broker-server time; the bar that just closed is
+        # the previous hour IN THAT FRAME (hour_start param is true UTC and
+        # only used for scheduling by the caller)
+        broker_hour = _floor_hour(now + timedelta(hours=self._broker_offset_h))
+        target_bar = pd.Timestamp(broker_hour - timedelta(hours=1))
         not_ready: set[str] = set()
+        rejects: dict[str, int] = {}
+        evaluated = passed = 0
 
         account = self.connector.account()
         if not account:
@@ -172,6 +206,7 @@ class LiveTrader:
         allowed, why = entries_allowed(self.state)
         if not allowed:
             logger.info(f"entry cycle: blocked account-wide ({why})")
+            self._last_scan = f"blocked ({why})"
 
         # open book as risk-engine dicts
         open_infos = []
@@ -201,7 +236,8 @@ class LiveTrader:
             if ts_idx[-1] != target_bar:
                 continue                      # judged on a stale bar = wrong
             try:
-                verdict = self._brain(pos.asset_class).predict(d.iloc[-1], asof=now)
+                verdict = self._brain(pos.asset_class).predict(
+                    d.iloc[-1], asof=ts_idx[-1].to_pydatetime())
             except Exception as exc:
                 logger.error(f"{pos.symbol}: brain failed ({exc})")
                 continue
@@ -221,10 +257,12 @@ class LiveTrader:
             if only_symbols and symbol not in only_symbols:
                 continue
             if symbol in open_symbols:
+                rejects["already_open"] = rejects.get("already_open", 0) + 1
                 continue                      # one open position per symbol
             cls = info["asset_class"]
             frame = self._fresh_frame(symbol, now)
             if not frame:
+                rejects["no_bars"] = rejects.get("no_bars", 0) + 1
                 continue
             d, ts_idx = frame
             if ts_idx[-1] != target_bar:
@@ -232,85 +270,108 @@ class LiveTrader:
                 continue
             cooldown = parse_iso(self.state["no_entry_until"].get(symbol))
             if cooldown and now < cooldown:
+                rejects["cooldown"] = rejects.get("cooldown", 0) + 1
                 continue
             if not _session_ok(ts_idx[-1], symbol):
+                rejects["session"] = rejects.get("session", 0) + 1
                 continue
-            self._evaluate_entry(symbol, cls, d, now, account, risk_engine)
+            evaluated += 1
+            reason = self._evaluate_entry(symbol, cls, d, now, account,
+                                          risk_engine)
+            if reason is None:
+                passed += 1
+            else:
+                rejects[reason] = rejects.get(reason, 0) + 1
         self._retry_symbols = not_ready
+        top = ", ".join(f"{k}={v}" for k, v in
+                        sorted(rejects.items(), key=lambda kv: -kv[1])[:8])
+        self._last_scan = (f"{passed}/{evaluated} passed"
+                           + (f" | {top}" if top else ""))
+        logger.info(f"entry cycle (bar {target_bar}, broker "
+                    f"UTC{self._broker_offset_h:+.0f}): {evaluated} evaluated, "
+                    f"{passed} reached execution, {len(not_ready)} bars not "
+                    f"published yet" + (f" | rejects: {top}" if top else ""))
 
     def _evaluate_entry(self, symbol: str, cls: str, d: pd.DataFrame,
                         now: datetime, account: dict,
-                        risk_engine: RiskEngine) -> None:
-        """The gate chain, mirroring engine.py bar-for-bar. Any skip is a
-        silent log line; only full passes reach sizing."""
+                        risk_engine: RiskEngine) -> Optional[str]:
+        """The gate chain, mirroring engine.py bar-for-bar. Returns a short
+        reject reason for the funnel log, or None when the signal reached
+        execution."""
         i = len(d) - 1
         row = d.iloc[i]
         atr = float(d["atr_14"].iat[i])
         if not (atr == atr and atr > 0):
-            return
+            return "atr"
         spread_price = float(d["spread_price"].iat[i])
         med20 = float(d["spread_med20"].iat[i])
         if config.SPREAD_FILTER_ENABLED and med20 == med20 and med20 > 0 \
                 and spread_price > config.SPREAD_MAX_MULT_OF_MEDIAN * med20:
-            return
+            return "spread"
 
         try:
-            verdict = self._brain(cls).predict(row, asof=now)
+            # asof = the DECISION BAR's own timestamp (broker-server frame,
+            # same as every memory point) so the look-ahead guard matches the
+            # backtester exactly (fallback: now, for frames w/o timestamps)
+            asof = (d["timestamp"].iat[i].to_pydatetime()
+                    if "timestamp" in d.columns else now)
+            verdict = self._brain(cls).predict(row, asof=asof)
         except Exception as exc:
             logger.error(f"{symbol}: brain failed ({exc})")
-            return
+            return "brain_error"
         if verdict is None:
-            return
+            return "no_verdict"
         prob = verdict["prob"]
         long_sig = prob > config.BUY_THRESHOLD + config.ENTRY_CONVICTION_MARGIN
         short_sig = prob < config.SELL_THRESHOLD - config.ENTRY_CONVICTION_MARGIN
         if not (long_sig or short_sig):
-            return
+            return "conviction"
         if verdict["agreement"] < config.MIN_NEIGHBOR_AGREEMENT:
-            return
+            return "agreement"
         quality = verdict["quality"]
         if quality < _quality_floor(cls):
-            return
+            return "quality"
         adx = float(d["adx_14"].iat[i])
         # (NaN < x is False, so a missing ADX passes - same as the engine)
         if config.ENTRY_ADX_MIN > 0 and adx < config.ENTRY_ADX_MIN \
                 and quality < config.QUALITY_STRONG:
-            return
+            return "adx"
 
         o, c = float(d["open"].iat[i]), float(d["close"].iat[i])
         if config.ENTRY_BAR_CONFIRM_ENABLED:
             body = c - o
             if long_sig and body < -config.ENTRY_BAR_CONFIRM_TOLERANCE_ATR * atr:
-                return
+                return "bar_confirm"
             if short_sig and body > config.ENTRY_BAR_CONFIRM_TOLERANCE_ATR * atr:
-                return
+                return "bar_confirm"
         if config.ENTRY_VWAP_CONFIRM_ENABLED:
             dv = float(d["dist_vwap"].iat[i])
             if dv == dv:
                 vwap_atr = dv * c / atr
                 if long_sig and vwap_atr < -config.ENTRY_VWAP_CONFIRM_TOLERANCE_ATR:
-                    return
+                    return "vwap_confirm"
                 if short_sig and vwap_atr > config.ENTRY_VWAP_CONFIRM_TOLERANCE_ATR:
-                    return
+                    return "vwap_confirm"
         if config.ENTRY_NO_CHASE_ENABLED \
                 and float(d["bar_range"].iat[i]) > config.ENTRY_NO_CHASE_MAX_RANGE_ATR * atr:
-            return
+            return "no_chase"
         tp_dist = config.STOP_ATR_MULT * config.REWARD_RISK_RATIO * atr
         if config.MIN_TP_TO_SPREAD_MULT > 0 \
                 and tp_dist < config.MIN_TP_TO_SPREAD_MULT * spread_price:
-            return
+            return "tp_vs_spread"
         # LIVE-ONLY addition (config-documented, absent from the backtest
         # engine): crypto LONGs need price above sma200 AND positive 12h momentum.
         if config.CRYPTO_MOMENTUM_GATE and cls == "crypto" and long_sig:
             ds200 = float(d["dist_sma200"].iat[i])
             r12 = float(d["ret_12"].iat[i])
             if not (ds200 > 0 and r12 > 0):
-                return
+                return "crypto_momentum"
 
         self._execute_entry(symbol, cls, "LONG" if long_sig else "SHORT",
                             quality, verdict, atr, float(d["spread_pct"].iat[i]),
                             str(d["regime_label"].iat[i]), now, account,
                             risk_engine)
+        return None
 
     # ------------------------------------------------------------------
     # execution
@@ -524,6 +585,7 @@ class LiveTrader:
                 f"equity {equity:.2f} | open {len(self.state['positions'])} | "
                 f"day pnl {float(day.get('realized_pnl') or 0):+.2f} | "
                 f"closed today {int(day.get('closed_count') or 0)}"
+                + (f" | scan: {self._last_scan}" if self._last_scan else "")
                 + (" | DRY_RUN" if config.DRY_RUN else ""), "heartbeat")
 
         if config.TELEGRAM_EOD_REPORT and now.hour == 21 \

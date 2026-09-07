@@ -18,7 +18,12 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime, timezone
+
+from src.utils.logger import setup_logger
+
+logger = setup_logger("LiveState", "logs/live.log")
 
 STATE_VERSION = 1
 
@@ -79,16 +84,42 @@ def load_state(path: str) -> dict:
         return default_state()
 
 
-def save_state(path: str, state: dict) -> None:
-    """Atomic write: serialize fully, then os.replace over the old file."""
+_SAVE_ATTEMPTS = 5
+
+
+def save_state(path: str, state: dict) -> bool:
+    """Atomic write with retry: serialize fully, write a tmp file, then
+    os.replace over the old file.
+
+    Windows virus-scanners / search indexers / sync clients transiently
+    lock the destination right after a write (observed on the live box:
+    intermittent WinError 5 'Access is denied' on os.replace), so we retry
+    briefly and finally fall back to a direct (non-atomic) write. Returns
+    False if nothing worked — the in-memory state stays authoritative and
+    the next cycle retries; the DB journal remains the audited record."""
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
     tmp = os.path.join(directory, f".{os.path.basename(path)}.tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(state, fh, indent=1, default=str)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    payload = json.dumps(state, indent=1, default=str)
+    for attempt in range(1, _SAVE_ATTEMPTS + 1):
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+            return True
+        except OSError:
+            if attempt < _SAVE_ATTEMPTS:
+                time.sleep(0.1 * attempt)
+    try:
+        # last resort: a plain write beats losing the update entirely
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        return True
+    except OSError as exc:
+        logger.warning(f"state save failed ({exc}); next cycle retries")
+        return False
 
 
 # ---------------------------------------------------------------------------
