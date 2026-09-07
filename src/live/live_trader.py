@@ -62,6 +62,7 @@ logger = setup_logger("LiveTrader", "logs/live.log")
 
 MIN_BARS_FOR_FEATURES = 220       # sma200 + Wilder warm-up, else dropna empties
 ENTRY_RETRY_WINDOW_MINUTES = 10   # give a slow broker this long to publish the bar
+ALIVE_LOG_SECONDS = 300           # console life-sign cadence (freeze detection)
 
 
 def _floor_hour(dt: datetime) -> datetime:
@@ -86,6 +87,7 @@ class LiveTrader:
         # Measured live each entry cycle so DST switches are picked up.
         self._broker_offset_h = 0.0
         self._last_scan = ""                        # one-line funnel summary
+        self._last_alive_log = datetime.min.replace(tzinfo=timezone.utc)
 
     def _refresh_broker_offset(self, now: datetime) -> None:
         """Whole-hour offset of broker server time vs true UTC, derived from
@@ -676,6 +678,20 @@ class LiveTrader:
 
                 self._schedulers(now, account)
                 save_state(config.LIVE_STATE_PATH, self.state)
+
+                # visible life sign: the console can otherwise go quiet for
+                # ~50 min between hourly entry cycles, indistinguishable
+                # from a hang
+                if (now - self._last_alive_log).total_seconds() >= ALIVE_LOG_SECONDS:
+                    self._last_alive_log = now
+                    equity = float(account.get("equity") or 0.0)
+                    next_scan = 60 - int(now.minute)
+                    logger.info(
+                        f"alive: equity {equity:.2f} | open "
+                        f"{len(self.state['positions'])} | next entry scan "
+                        f"in ~{next_scan} min"
+                        + (f" | last scan: {self._last_scan}"
+                           if self._last_scan else ""))
             except Exception as exc:
                 logger.exception(f"cycle error: {exc}")
                 send_telegram(f"cycle error (engine alive): {exc}", "critical")
