@@ -328,38 +328,55 @@ class LiveTrader:
         short_sig = prob < config.SELL_THRESHOLD - config.ENTRY_CONVICTION_MARGIN
         if not (long_sig or short_sig):
             return "conviction"
+        # past conviction = a near-miss: log exactly why it died, with numbers
+        side_txt = "LONG" if long_sig else "SHORT"
         if verdict["agreement"] < config.MIN_NEIGHBOR_AGREEMENT:
+            logger.info(f"{symbol}: near-miss {side_txt} p={prob:.3f} - "
+                        f"agreement {verdict['agreement']:.2f} < "
+                        f"{config.MIN_NEIGHBOR_AGREEMENT}")
             return "agreement"
         quality = verdict["quality"]
-        if quality < _quality_floor(cls):
+        floor = _quality_floor(cls)
+        if quality < floor:
+            logger.info(f"{symbol}: near-miss {side_txt} p={prob:.3f} - "
+                        f"quality {quality:.3f} < {floor}")
             return "quality"
         adx = float(d["adx_14"].iat[i])
         # (NaN < x is False, so a missing ADX passes - same as the engine)
         if config.ENTRY_ADX_MIN > 0 and adx < config.ENTRY_ADX_MIN \
                 and quality < config.QUALITY_STRONG:
+            logger.info(f"{symbol}: near-miss {side_txt} p={prob:.3f} "
+                        f"q={quality:.2f} - ADX {adx:.1f} < {config.ENTRY_ADX_MIN}")
             return "adx"
 
         o, c = float(d["open"].iat[i]), float(d["close"].iat[i])
         if config.ENTRY_BAR_CONFIRM_ENABLED:
             body = c - o
-            if long_sig and body < -config.ENTRY_BAR_CONFIRM_TOLERANCE_ATR * atr:
-                return "bar_confirm"
-            if short_sig and body > config.ENTRY_BAR_CONFIRM_TOLERANCE_ATR * atr:
+            if (long_sig and body < -config.ENTRY_BAR_CONFIRM_TOLERANCE_ATR * atr) \
+                    or (short_sig and body > config.ENTRY_BAR_CONFIRM_TOLERANCE_ATR * atr):
+                logger.info(f"{symbol}: near-miss {side_txt} p={prob:.3f} - "
+                            f"bar confirm (body {body/atr:+.2f} ATR against)")
                 return "bar_confirm"
         if config.ENTRY_VWAP_CONFIRM_ENABLED:
             dv = float(d["dist_vwap"].iat[i])
             if dv == dv:
                 vwap_atr = dv * c / atr
-                if long_sig and vwap_atr < -config.ENTRY_VWAP_CONFIRM_TOLERANCE_ATR:
-                    return "vwap_confirm"
-                if short_sig and vwap_atr > config.ENTRY_VWAP_CONFIRM_TOLERANCE_ATR:
+                if (long_sig and vwap_atr < -config.ENTRY_VWAP_CONFIRM_TOLERANCE_ATR) \
+                        or (short_sig and vwap_atr > config.ENTRY_VWAP_CONFIRM_TOLERANCE_ATR):
+                    logger.info(f"{symbol}: near-miss {side_txt} p={prob:.3f} - "
+                                f"VWAP confirm ({vwap_atr:+.2f} ATR wrong side)")
                     return "vwap_confirm"
         if config.ENTRY_NO_CHASE_ENABLED \
                 and float(d["bar_range"].iat[i]) > config.ENTRY_NO_CHASE_MAX_RANGE_ATR * atr:
+            logger.info(f"{symbol}: near-miss {side_txt} p={prob:.3f} - "
+                        f"no-chase (bar range "
+                        f"{float(d['bar_range'].iat[i])/atr:.2f} ATR)")
             return "no_chase"
         tp_dist = config.STOP_ATR_MULT * config.REWARD_RISK_RATIO * atr
         if config.MIN_TP_TO_SPREAD_MULT > 0 \
                 and tp_dist < config.MIN_TP_TO_SPREAD_MULT * spread_price:
+            logger.info(f"{symbol}: near-miss {side_txt} p={prob:.3f} - "
+                        f"TP {tp_dist:.6f} not worth spread {spread_price:.6f}")
             return "tp_vs_spread"
         # LIVE-ONLY addition (config-documented, absent from the backtest
         # engine): crypto LONGs need price above sma200 AND positive 12h momentum.
@@ -367,12 +384,17 @@ class LiveTrader:
             ds200 = float(d["dist_sma200"].iat[i])
             r12 = float(d["ret_12"].iat[i])
             if not (ds200 > 0 and r12 > 0):
+                logger.info(f"{symbol}: near-miss LONG p={prob:.3f} - crypto "
+                            f"momentum gate (dist_sma200 {ds200:+.4f}, "
+                            f"ret_12 {r12:+.4f})")
                 return "crypto_momentum"
 
         self._execute_entry(symbol, cls, "LONG" if long_sig else "SHORT",
                             quality, verdict, atr, float(d["spread_pct"].iat[i]),
                             str(d["regime_label"].iat[i]), now, account,
-                            risk_engine)
+                            risk_engine,
+                            signal_close=float(d["close"].iat[i]),
+                            med_spread_price=med20)
         return None
 
     # ------------------------------------------------------------------
@@ -381,17 +403,40 @@ class LiveTrader:
     def _execute_entry(self, symbol: str, cls: str, side: str, quality: float,
                        verdict: dict, atr: float, spread_pct: float,
                        regime: str, now: datetime, account: dict,
-                       risk_engine: RiskEngine) -> None:
+                       risk_engine: RiskEngine,
+                       signal_close: float = 0.0,
+                       med_spread_price: float = 0.0) -> None:
         s = 1 if side == "LONG" else -1
         equity = float(account.get("equity") or 0.0)
         slice_cap = min(config.CAPITAL_PER_SYMBOL, equity * config.SLICE_PCT_OF_EQUITY)
         risk_usd = slice_cap * _risk_pct(quality)
+        # hard ceiling: one trade never risks more than X% of equity
+        risk_usd = min(risk_usd, config.MAX_TRADE_RISK_PCT_OF_EQUITY * equity)
         stop_dist = config.STOP_ATR_MULT * atr
 
         tick = self.connector.get_tick(symbol)
         if tick is None:
             return
         entry_ref = float(tick.ask if side == "LONG" else tick.bid)
+
+        # ---- execution-time placement gates (LIVE-ONLY, config-documented;
+        # the backtest fills at next bar open by construction) -------------
+        drift_atr = 0.0
+        if signal_close > 0 and atr > 0:
+            drift_atr = (entry_ref - signal_close) * s / atr
+            if abs(drift_atr) > config.ENTRY_MAX_SIGNAL_DRIFT_ATR:
+                logger.info(f"{symbol}: SKIPPED at execution - price drifted "
+                            f"{drift_atr:+.2f} ATR from the signal bar close "
+                            f"({signal_close} -> {entry_ref}); not chasing")
+                return
+        if med_spread_price > 0:
+            live_spread = float(tick.ask) - float(tick.bid)
+            if live_spread > config.ENTRY_LIVE_SPREAD_MAX_MULT * med_spread_price:
+                logger.info(f"{symbol}: SKIPPED at execution - live spread "
+                            f"{live_spread:.6f} > {config.ENTRY_LIVE_SPREAD_MAX_MULT}x "
+                            f"the 20-bar median ({med_spread_price:.6f})")
+                return
+
         sl = entry_ref - s * stop_dist
         tp = entry_ref + s * stop_dist * config.REWARD_RISK_RATIO
 
@@ -456,6 +501,14 @@ class LiveTrader:
             f"TP {round(tp, specs['digits'] if specs else 5)} | "
             f"q={quality:.2f} p={verdict['prob']:.3f} n={pos.memory_n}"
             + (" | DRY_RUN" if config.DRY_RUN else ""), "entry")
+        logger.info(
+            f"ENTRY {symbol} {side} {lots} lots @ {fill_price} "
+            f"ticket={ticket} | SL {sl} TP {tp} (stop {stop_dist:.5f} = "
+            f"{config.STOP_ATR_MULT}x ATR {atr:.5f}) | q={quality:.3f} "
+            f"p={verdict['prob']:.3f} agr={verdict['agreement']:.2f} "
+            f"n={pos.memory_n} regime={regime} | spread_pct={spread_pct:.5f} "
+            f"drift={drift_atr:+.2f}A risk=${risk_usd:.0f} "
+            f"equity=${equity:.0f}{' DRY_RUN' if config.DRY_RUN else ''}")
 
         # the book changed: later entries this cycle must see it
         risk_engine.open_positions.append(
@@ -509,7 +562,8 @@ class LiveTrader:
                     pos.sl = new_sl
                 else:
                     continue                     # retry next cycle
-                if reason in ("ratchet", "flip_tighten"):
+                if reason in ("ratchet", "ratchet2", "breakeven_lock",
+                              "flip_tighten"):
                     send_telegram(f"{pos.symbol}: stop {reason} -> {new_sl}",
                                   "info")
                 if reason == "flip_tighten":
@@ -624,6 +678,17 @@ class LiveTrader:
                     logger.info("daily maintenance completed OK")
                 self._maintenance_proc = None
 
+    def _close_all_for_day(self, now: datetime) -> None:
+        """Daily profit target hit: bank EVERYTHING. Failed closes stay in
+        state and the main loop retries them each cycle until flat."""
+        for pos_d in list(self.state["positions"].values()):
+            pos = ManagedPosition.from_dict(pos_d)
+            price = self.connector.get_latest_price(pos.symbol, pos.side)
+            if price is None or price <= 0:
+                price = pos.entry_price          # last resort; still journals
+            self._apply_actions(pos, price, [(CLOSE_ALL, None, "daily_target")],
+                                now)
+
     def _lock_breakeven(self, now: datetime) -> None:
         """Daily profit target hit: pull every stop to at least entry."""
         for pos_d in list(self.state["positions"].values()):
@@ -657,11 +722,24 @@ class LiveTrader:
                         send_telegram("DAILY LOSS LIMIT hit - no new entries "
                                       "until tomorrow (UTC)", "critical")
                     elif ev == "daily_profit_target":
-                        self._lock_breakeven(now)
+                        if config.DAILY_TARGET_CLOSE_ALL:
+                            send_telegram(
+                                f"DAILY TARGET +${config.DAILY_PROFIT_TARGET_USD:.0f} "
+                                f"reached - closing all positions, done for today",
+                                "target")
+                            self._close_all_for_day(now)
+                        else:
+                            self._lock_breakeven(now)
                     elif ev == "drawdown_breaker":
                         send_telegram(f"DRAWDOWN BREAKER: equity fell "
                                       f"{config.MAX_DRAWDOWN_PCT:.0%} from peak - "
                                       f"entries halted until tomorrow", "critical")
+
+                # target fired but a close failed -> keep retrying until flat
+                if config.DAILY_TARGET_CLOSE_ALL \
+                        and self.state["day"].get("profit_lock") \
+                        and self.state["positions"]:
+                    self._close_all_for_day(now)
 
                 self._manage(now)
 

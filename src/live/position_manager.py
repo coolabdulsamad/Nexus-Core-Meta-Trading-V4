@@ -12,7 +12,9 @@ the connector (real) or the virtual book (DRY_RUN).
 Rule order mirrors trade_sim.py exactly (order matters):
   0. virtual SL/TP (DRY_RUN only - real positions have broker-side brackets)
   1. scale-outs: 1/3 of INITIAL volume at +SCALE_OUT_1_ATR, another at +2
-  2. ratchet: peak >= PROFIT_RATCHET_ATR -> stop locks entry + RATCHET_LOCK_ATR
+  2. breakeven lock + ratchet ladder: peak >= BREAKEVEN_LOCK_ARM_ATR -> stop
+     to entry+BREAKEVEN_LOCK_PLUS_ATR; ratchet rungs at PROFIT_RATCHET_ATR
+     and PROFIT_RATCHET_2_ATR lock RATCHET_LOCK_ATR / RATCHET_2_LOCK_ATR
   3. trailing: peak >= TRAILING_STOP_ACTIVATE_ATR -> stop trails the peak
   4. retracement exit: armed at RETRACEMENT_ARM_ATR, keeps RETRACEMENT_KEEP_PCT
   5. time partial: after TIME_PARTIAL_BARS bars with < TIME_PARTIAL_PROFIT_ATR
@@ -136,8 +138,16 @@ def evaluate(pos: ManagedPosition, price: float, now: datetime,
                                 pos.volume),
                             "scale_out_2"))
 
-    # ---- 2. ratchet ------------------------------------------------------
-    if pdp and peak_atr >= config.PROFIT_RATCHET_ATR:
+    # ---- 2. breakeven lock + ratchet ladder -------------------------------
+    if pdp and peak_atr >= config.BREAKEVEN_LOCK_ARM_ATR:
+        be = pos.entry_price + s * config.BREAKEVEN_LOCK_PLUS_ATR * atr
+        if improves(be):
+            actions.append((SET_SL, be, "breakeven_lock"))
+    if pdp and peak_atr >= config.PROFIT_RATCHET_2_ATR:
+        lock2 = pos.entry_price + s * config.RATCHET_2_LOCK_ATR * atr
+        if improves(lock2):
+            actions.append((SET_SL, lock2, "ratchet2"))
+    elif pdp and peak_atr >= config.PROFIT_RATCHET_ATR:
         lock = pos.entry_price + s * config.RATCHET_LOCK_ATR * atr
         if improves(lock):
             actions.append((SET_SL, lock, "ratchet"))
@@ -178,7 +188,7 @@ def evaluate(pos: ManagedPosition, price: float, now: datetime,
             if open_profit_atr >= config.FLIP_EXIT_PROFIT_ATR:
                 return actions + [(CLOSE_ALL, None, "flip_exit")]
             if config.FLIP_TIGHTEN_UNDERWATER and not pos.flip_tightened:
-                tight = pos.entry_price - s * 1.0 * atr
+                tight = pos.entry_price - s * config.FLIP_TIGHTEN_STOP_ATR * atr
                 if improves(tight):
                     actions.append((SET_SL, tight, "flip_tighten"))
 

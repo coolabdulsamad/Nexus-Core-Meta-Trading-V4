@@ -144,6 +144,34 @@ positive, we tune in Phase 7 before ever discussing live money.
 > guard uses the decision bar's own timestamp for exact backtest parity.
 > Also: entry cycles now log a one-line reject funnel + heartbeat `scan:`
 > summary, and state saves survive transient Windows file locks.
+>
+> **Update (2026-09-12):** week-1 evidence review — 53 real trades closed
+> Sep 7–11 for **−$533.56** (stop_loss 36 × −0.53R avg, take_profit 7 ×
+> +1.17R avg). The exits were the leak: trailing_stop and breakeven fired
+> **zero** times all week (trailing armed at +2.5 ATR trailing 2.5 ATR vs a
+> +3.0 ATR target — mathematically dead), and nothing protected trades
+> between entry and +1.5 ATR, so +1-ATR trades round-tripped to full stops.
+> Fixes shipped (all mirrored in `trade_sim.py` for live/backtest parity,
+> covered by `test_phase5_local.py` 92/92 + `test_phase5_hotfix_local.py`
+> 24/24):
+> - **Exit stack v2** — breakeven lock at +1.0 ATR (entry + 0.10 ATR),
+>   ratchets +1.5→+0.5 and +2.0→+1.0 ATR, trailing arms at +1.75 ATR and
+>   trails 0.75 ATR, retracement arms +1.5, flip gates tightened. A trade
+>   that reaches +1 ATR can no longer return to a full loss.
+> - **Daily USD guards** — `DAILY_PROFIT_TARGET_USD` (default 200) closes
+>   ALL positions and halts entries until the next UTC day when equity is
+>   up that much; `DAILY_LOSS_LIMIT_USD` (default 400) halts the downside.
+>   Measured on equity (floating counts), retried until flat.
+> - **Execution placement gates** — entries are skipped if the live tick
+>   has drifted > 0.30 ATR from the signal bar's close, or if live spread
+>   exceeds 2.0× the bar's 20-bar median spread.
+> - **Sizing normalized** — risk tiers unchanged (2%/1%/0.5% of slice by
+>   signal strength) but `NOTIONAL_CAP_PCT` 0.75 → 3.0 (forex was strangled
+>   to ~$20 risk per 1R while crypto/metal carried $120–357), plus a hard
+>   `MAX_TRADE_RISK_PCT_OF_EQUITY` = 0.5% ceiling per trade.
+> - **Logging** — every entry logs quality/prob/agreement/regime/spread/
+>   drift/risk in one line; every close logs pnl, R, peak ATR reached
+>   (MFE), hold time, entry and exit prices.
 
 Steps:
 1. `src/live/live_trader.py` — main loop on the hourly bar close:

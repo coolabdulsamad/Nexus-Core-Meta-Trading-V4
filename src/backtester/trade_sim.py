@@ -4,11 +4,13 @@ Pure function over numpy arrays — no DB, no Qdrant — so it is unit-testable
 in isolation. Called by the engine once an entry decision is made; the
 entry fill has ALREADY happened (entry_idx bar's open).
 
-Exit stack (v3.6, order matters — checked every bar after entry):
+Exit stack (v2, order matters — checked every bar after entry):
   1. hard SL / TP, intrabar via high/low; if both touched in one bar the
      STOP is assumed hit first (conservative)
   2. scale-outs: 1/3 at +SCALE_OUT_1_ATR, another 1/3 at +SCALE_OUT_2_ATR
-  3. ratchet: once peak >= PROFIT_RATCHET_ATR, stop locks entry + RATCHET_LOCK_ATR
+  3. breakeven lock + ratchet ladder: peak >= BREAKEVEN_LOCK_ARM_ATR ->
+     stop to entry+BREAKEVEN_LOCK_PLUS_ATR; >= PROFIT_RATCHET_ATR -> lock
+     RATCHET_LOCK_ATR; >= PROFIT_RATCHET_2_ATR -> lock RATCHET_2_LOCK_ATR
   4. trailing: once peak >= TRAILING_STOP_ACTIVATE_ATR, stop trails the peak
   5. retracement exit: armed at RETRACEMENT_ARM_ATR, keeps RETRACEMENT_KEEP_PCT
   6. time partial: after TIME_PARTIAL_BARS with < TIME_PARTIAL_PROFIT_ATR
@@ -128,8 +130,14 @@ def simulate_trade(ts: pd.DatetimeIndex, opens: np.ndarray, highs: np.ndarray,
                 scaled_2 = True
                 scale_outs += 1
 
-        # ---- 3. ratchet ---------------------------------------------------
-        if pdp and peak_atr >= config.PROFIT_RATCHET_ATR:
+        # ---- 3. breakeven lock + ratchet ladder + trailing ----------------
+        if pdp and peak_atr >= config.BREAKEVEN_LOCK_ARM_ATR:
+            be = entry_price + s * config.BREAKEVEN_LOCK_PLUS_ATR * atr
+            sl = max(sl, be) if s > 0 else min(sl, be)
+        if pdp and peak_atr >= config.PROFIT_RATCHET_2_ATR:
+            lock2 = entry_price + s * config.RATCHET_2_LOCK_ATR * atr
+            sl = max(sl, lock2) if s > 0 else min(sl, lock2)
+        elif pdp and peak_atr >= config.PROFIT_RATCHET_ATR:
             lock = entry_price + s * config.RATCHET_LOCK_ATR * atr
             sl = max(sl, lock) if s > 0 else min(sl, lock)
 

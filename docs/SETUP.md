@@ -73,6 +73,12 @@ Fill in:
   @BotFather, message it once, then get your chat id via
   `https://api.telegram.org/bot<TOKEN>/getUpdates`.
 - **NEWSAPI_KEY** — free key at newsapi.org (Phase 6; can stay empty now).
+- **DAILY_PROFIT_TARGET_USD** — default `200`. When the day's equity gain
+  (realized + floating) reaches this, every open position is closed and no
+  new trades open until the next UTC day. Set `0` to disable the USD target
+  (the percentage target still applies).
+- **DAILY_LOSS_LIMIT_USD** — default `400`. Same idea on the downside: the
+  day is halted when equity is down this much.
 - **DRY_RUN=true** — leave it. Seriously.
 
 ## 5. Start the infrastructure
@@ -372,9 +378,11 @@ What was built:
 - `src/live/live_trader.py` — the engine: hourly bar-close entries through
   the exact backtest gate chain, 60-second position management, daily
   guards, circuit breakers, Telegram heartbeats/EOD, daily maintenance.
-- `src/live/position_manager.py` — the full exit stack live: scale-outs,
-  ratchet, trailing, retracement, time partial/stop, flip exits, Friday
-  flatten. Real positions carry broker-side SL/TP from second zero.
+- `src/live/position_manager.py` — the full exit stack live (v2, week-1
+  retune): scale-outs, breakeven lock at +1.0 ATR, profit ratchets
+  (+1.5→+0.5, +2.0→+1.0), trailing (arms +1.75 ATR, trails 0.75 ATR),
+  retracement, time partial/stop, flip exits, Friday flatten. Real
+  positions carry broker-side SL/TP from second zero.
 - `src/live/risk_engine.py` — per-currency net risk cap (2.5%), total open
   risk cap (5%), max 5 positions, daily loss/profit guards, drawdown breaker.
 - `src/live/reconciler.py` — the broker is the only truth: adopts positions

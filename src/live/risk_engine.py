@@ -153,19 +153,28 @@ def refresh_daily_guards(state: dict, account: dict, now: datetime) -> list[str]
         state["peak_equity"] = equity
         peak = equity
 
-    # daily loss limit (vs day-start balance)
+    # daily loss limit (vs day-start balance), plus the USD guard
     start_balance = float(day.get("start_balance") or 0.0)
+    start_equity = float(day.get("start_equity") or 0.0)
     if start_balance > 0 and not day.get("halted_loss"):
         day_ret = (equity - start_balance) / start_balance
-        if day_ret <= -config.DAILY_LOSS_LIMIT_PCT:
+        usd_down = start_equity - equity if start_equity > 0 else 0.0
+        if day_ret <= -config.DAILY_LOSS_LIMIT_PCT or \
+                (config.DAILY_LOSS_LIMIT_USD > 0
+                 and usd_down >= config.DAILY_LOSS_LIMIT_USD):
             day["halted_loss"] = True
             events.append("daily_loss_limit")
 
-    # daily profit target -> stop opening (optional breakeven lock)
-    if (config.DAILY_PROFIT_TARGET_PCT > 0 and start_balance > 0
-            and not day.get("profit_lock")):
+    # daily profit target -> stop opening; USD target (equity-based, so
+    # floating profit counts) is the operator-facing one
+    if start_balance > 0 and not day.get("profit_lock"):
         day_ret = (equity - start_balance) / start_balance
-        if day_ret >= config.DAILY_PROFIT_TARGET_PCT:
+        usd_up = equity - start_equity if start_equity > 0 else 0.0
+        pct_hit = config.DAILY_PROFIT_TARGET_PCT > 0 \
+            and day_ret >= config.DAILY_PROFIT_TARGET_PCT
+        usd_hit = config.DAILY_PROFIT_TARGET_USD > 0 \
+            and usd_up >= config.DAILY_PROFIT_TARGET_USD
+        if pct_hit or usd_hit:
             day["profit_lock"] = True
             events.append("daily_profit_target")
 

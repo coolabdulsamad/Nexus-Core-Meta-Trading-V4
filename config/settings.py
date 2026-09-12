@@ -170,8 +170,12 @@ class GlobalConfig:
     RISK_PCT_STRONG = 0.020           # % of per-symbol slice risked to the stop
     RISK_PCT_MEDIUM = 0.010
     RISK_PCT_WEAK = 0.005
-    NOTIONAL_CAP_PCT = 0.75           # max notional per position, % of slice
+    NOTIONAL_CAP_PCT = 3.0            # max notional per position, x slice (was
+                                      # 0.75 - it strangled tight-stop forex to
+                                      # ~$20 R while crypto carried full risk)
     NOTIONAL_CAP_ABS = 75000          # absolute $ cap per position
+    MAX_TRADE_RISK_PCT_OF_EQUITY = 0.005  # hard ceiling: one trade never risks
+                                      # more than 0.5% of equity, any class
 
     # ----- Entry analysis gates (the Alpaca edition's post-mortems) -----
     SENTIMENT_VETO_LONG = -0.60       # sent <= this -> no LONG (extreme fear)
@@ -188,6 +192,15 @@ class GlobalConfig:
     ENTRY_NO_CHASE_ENABLED = True
     ENTRY_NO_CHASE_MAX_RANGE_ATR = 1.5
     ENTRY_ADX_MIN = 20.0              # with-trend entries need a real trend (0 = off)
+    # Execution-time placement (LIVE ONLY - the backtest fills at next bar
+    # open by construction; live fills at a tick 20-60s after the signal
+    # bar, and the market can run away in that minute):
+    ENTRY_MAX_SIGNAL_DRIFT_ATR = 0.30 # skip if the live price moved more than
+                                      # this from the signal bar's close, either
+                                      # way (chasing a runaway OR tape already
+                                      # contradicting the fresh signal)
+    ENTRY_LIVE_SPREAD_MAX_MULT = 2.0  # skip if the LIVE spread > 2x the bar's
+                                      # 20-bar median (hour-boundary spikes)
 
     # ----- Cost guards (NEW - forex edge lives or dies here) -----
     SPREAD_FILTER_ENABLED = True
@@ -228,21 +241,35 @@ class GlobalConfig:
     SMA_EXIT_BUFFER_ATR = 0.25
     SMA_EXIT_CONFIRM_BARS = 2
 
-    # ----- Profit locking (the rebuilt v3.6 stack) -----
+    # ----- Profit locking (exit stack v2, 2026-09-12 retune) -----
+    # Week-1 demo evidence: with the old ladder (ratchet +1.5 -> +0.5,
+    # trailing armed at +2.5 trailing 2.5 behind while the TP sits at +3.0)
+    # the trailing stop could NEVER beat the TP - it fired 0 times in 53
+    # trades, and 0 breakeven locks happened. Trades routinely round-tripped
+    # +1 ATR back to the full -2 ATR stop. The v2 ladder engages protection
+    # from +1 ATR onward so a trade that was meaningfully right can no
+    # longer come back to a full loss.
     ENABLE_PROFIT_DRAWDOWN_PROTECTION = True
-    RETRACEMENT_ARM_ATR = 2.0         # arm the lock only after +2 ATR peak
-    RETRACEMENT_KEEP_PCT = 0.60       # exit if profit falls to 60% of peak
-    PROFIT_RATCHET_ATR = 1.5          # at +1.5 ATR the stop ratchets up ...
-    RATCHET_LOCK_ATR = 0.50           # ... to entry + 0.5 ATR (locks real money)
-    TRAILING_STOP_ACTIVATE_ATR = 2.5  # hard trailing starts at +2.5 ATR
-    TRAILING_STOP_DISTANCE_ATR = 2.5  # trail 2.5 ATR behind the peak
+    BREAKEVEN_LOCK_ARM_ATR = 1.0      # peak >= +1 ATR -> stop to entry + PLUS
+    BREAKEVEN_LOCK_PLUS_ATR = 0.10    # lock a hair above entry (covers costs)
+    RETRACEMENT_ARM_ATR = 1.5         # arm the lock after +1.5 ATR peak (was 2.0)
+    RETRACEMENT_KEEP_PCT = 0.50       # exit if profit falls below 50% of peak
+    PROFIT_RATCHET_ATR = 1.5          # rung 1: at +1.5 ATR lock entry + 0.5 ATR
+    RATCHET_LOCK_ATR = 0.50
+    PROFIT_RATCHET_2_ATR = 2.0        # rung 2: at +2.0 ATR lock entry + 1.0 ATR
+    RATCHET_2_LOCK_ATR = 1.00
+    TRAILING_STOP_ACTIVATE_ATR = 1.75 # hard trailing starts at +1.75 ATR (was
+                                      # 2.5 - unreachable before the +3 ATR TP)
+    TRAILING_STOP_DISTANCE_ATR = 0.75 # trail 0.75 ATR behind the peak (was 2.5,
+                                      # which trailed at breakeven = useless)
     SCALE_OUT_ENABLED = True          # sell 1/3 at +1 ATR and 1/3 at +2 ATR, trail the rest
     SCALE_OUT_1_ATR = 1.0
     SCALE_OUT_2_ATR = 2.0
     SCALE_OUT_PCT = 0.33
     # In-trade re-analysis: the brain re-judges every open position each cycle
-    FLIP_EXIT_PROFIT_ATR = 0.5        # brain flips against + profit >= 0.5 ATR -> exit NOW
-    FLIP_TIGHTEN_UNDERWATER = True    # brain flips against while underwater -> tighten stop to 1 ATR
+    FLIP_EXIT_PROFIT_ATR = 0.25       # brain flips against + profit >= this -> exit NOW
+    FLIP_TIGHTEN_UNDERWATER = True    # brain flips against while underwater -> tighten stop
+    FLIP_TIGHTEN_STOP_ATR = 0.75      # ... to this ATR distance (was hardcoded 1.0)
     ENABLE_TIME_PARTIAL = True
     TIME_PARTIAL_BARS = 12
     TIME_PARTIAL_PROFIT_ATR = 0.5
@@ -263,9 +290,14 @@ class GlobalConfig:
     ADOPT_FOREIGN_POSITIONS = False   # positions with magic=0/manual: alert, don't adopt (default)
 
     # ----- Daily guards (account-wide, not per-symbol - forex book is one book) -----
-    DAILY_LOSS_LIMIT_PCT = 0.05       # stop opening after -5% day
+    DAILY_LOSS_LIMIT_PCT = 0.05       # stop opening after -5% day (backstop)
     DAILY_PROFIT_TARGET_PCT = 0.02    # +2% day -> stop opening new trades (0 = disabled)
     DAILY_TARGET_LOCK_BREAKEVEN = True
+    # USD guards (the ones the operator actually sets; env-overridable).
+    # Measured on EQUITY vs the day's start equity, so floating profit counts.
+    DAILY_PROFIT_TARGET_USD = float(os.getenv("DAILY_PROFIT_TARGET_USD", "200"))
+    DAILY_TARGET_CLOSE_ALL = True     # target hit -> CLOSE EVERYTHING, done for the day
+    DAILY_LOSS_LIMIT_USD = float(os.getenv("DAILY_LOSS_LIMIT_USD", "400"))  # 0 = off
 
     # ----- Circuit breakers -----
     MAX_DRAWDOWN_PCT = 0.10

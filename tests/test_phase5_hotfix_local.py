@@ -272,6 +272,58 @@ check("final attempt still ERROR + gave-up line",
       levels == [logging.WARNING, logging.WARNING, logging.ERROR]
       and len(gave_up) == 1 and gave_up[0].levelno == logging.ERROR)
 
+print("\n=== 5. daily USD guards + close-all-on-target ===")
+from src.live.risk_engine import refresh_daily_guards, entries_allowed
+
+st = default_state()
+acct = {"equity": 100000.0, "balance": 100000.0}
+ev = refresh_daily_guards(st, acct, NOW)
+check("new day event", "new_day" in ev)
+
+# equity up $250 >= $200 target -> profit_lock + event
+ev = refresh_daily_guards(st, {"equity": 100250.0, "balance": 100000.0}, NOW)
+check("USD profit target fires", "daily_profit_target" in ev)
+check("profit_lock latched", st["day"]["profit_lock"] is True)
+ok, why = entries_allowed(st)
+check("entries blocked after target", not ok and "profit" in why)
+
+# equity down $450 <= -$400 -> halted_loss
+st2 = default_state()
+refresh_daily_guards(st2, acct, NOW)
+ev = refresh_daily_guards(st2, {"equity": 99550.0, "balance": 100000.0}, NOW)
+check("USD loss limit fires", "daily_loss_limit" in ev)
+check("halted_loss latched", st2["day"]["halted_loss"] is True)
+
+# close-all-on-target: every open position gets a CLOSE_ALL through
+t3 = LT.LiveTrader.__new__(LT.LiveTrader)
+t3.state = default_state()
+t3.state["day"]["date"] = NOW.date().isoformat()
+from src.live.position_manager import ManagedPosition, CLOSE_ALL as CA
+closed = []
+class ConnClose:
+    def get_latest_price(self, sym, side): return 1.1010
+    def symbol_specs(self, sym):
+        return {"tick_size": 0.0001, "tick_value": 1.0, "digits": 5}
+    def closed_position_summary(self, ticket):
+        return {"exit_price": 1.1010, "exit_time": NOW, "profit": 5.0,
+                "volume_closed": 0.1, "comment": ""}
+t3.connector = ConnClose()
+for i, sym in enumerate(("EURUSD", "GBPUSD")):
+    p = ManagedPosition(ticket=1000 + i, symbol=sym, asset_class="forex",
+                        side="LONG", entry_price=1.1000,
+                        entry_time=state_mod.iso(NOW), initial_volume=0.1,
+                        volume=0.1, atr=0.001, sl=1.0980, tp=1.1030,
+                        peak_price=1.1005, trough_price=1.1000,
+                        risk_usd=20.0, dry_run=False)
+    t3.state["positions"][str(p.ticket)] = p.to_dict()
+t3._apply_actions = lambda pos, price, actions, now: (
+    closed.append((pos.symbol, actions[0][2])),
+    t3.state["positions"].pop(str(pos.ticket), None))
+t3._close_all_for_day(NOW)
+check("close-all hits every position with daily_target",
+      sorted(sym for sym, _ in closed) == ["EURUSD", "GBPUSD"]
+      and all(r == "daily_target" for _, r in closed))
+
 print("\n============================================================")
 print(f"RESULT: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

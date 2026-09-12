@@ -36,7 +36,7 @@ logger = setup_logger("Reconciler", "logs/live.log")
 
 _CLOSE_ICONS = {"stop_loss": "stop", "take_profit": "target",
                 "scale_out_1": "partial", "scale_out_2": "partial",
-                "time_partial": "partial"}
+                "time_partial": "partial", "daily_target": "target"}
 
 
 def estimate_pnl(pos: ManagedPosition, exit_price: float,
@@ -85,14 +85,30 @@ def finalize_close(state: dict, pos: ManagedPosition, *, exit_price: float,
     day["realized_pnl"] = float(day.get("realized_pnl", 0.0)) + pnl
 
     # ---- notify + forget -------------------------------------------------
+    # MFE (max favorable excursion, in ATR) tells us how much profit the
+    # trade SAW vs what it kept - the profit-locking report card
+    mfe_atr = 0.0
+    if pos.atr > 0:
+        mfe_atr = max(0.0, pos.sign * (pos.peak_price - pos.entry_price)
+                      / pos.atr)
+    held_h = 0.0
+    entry_dt = parse_iso(pos.entry_time)
+    if entry_dt is not None:
+        et = exit_time
+        if getattr(et, "tzinfo", None) is None:
+            et = et.replace(tzinfo=entry_dt.tzinfo)
+        held_h = max(0.0, (et - entry_dt).total_seconds() / 3600.0)
     kind = _CLOSE_ICONS.get(reason, "exit")
     send_telegram(
         f"{pos.symbol} {pos.side} closed ({reason})\n"
-        f"exit {exit_price} | pnl {pnl:+.2f} ({r_multiple:+.2f}R)"
+        f"exit {exit_price} | pnl {pnl:+.2f} ({r_multiple:+.2f}R)\n"
+        f"peak saw +{mfe_atr:.2f} ATR | held {held_h:.1f}h"
         + (" | DRY_RUN" if pos.dry_run else ""), kind)
     state["positions"].pop(str(pos.ticket), None)
-    logger.info(f"closed {pos.symbol} ticket {pos.ticket}: {reason} "
-                f"pnl={pnl:+.2f} r={r_multiple:+.2f}")
+    logger.info(f"closed {pos.symbol} {pos.side} ticket {pos.ticket}: {reason} "
+                f"pnl={pnl:+.2f} r={r_multiple:+.2f} mfe=+{mfe_atr:.2f}A "
+                f"held={held_h:.1f}h entry={pos.entry_price} "
+                f"exit={exit_price}")
 
 
 def adopt_position(state: dict, broker_pos: dict, canonical: str,
