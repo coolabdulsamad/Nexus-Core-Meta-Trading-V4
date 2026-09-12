@@ -42,6 +42,7 @@ def default_state() -> dict:
         # ---- daily guards (refreshed at 00:00 UTC) ----
         "day": {
             "date": None,             # "YYYY-MM-DD" (UTC) the anchors belong to
+            "login": None,            # MT5 account the anchors belong to
             "start_balance": None,
             "start_equity": None,
             "closed_count": 0,

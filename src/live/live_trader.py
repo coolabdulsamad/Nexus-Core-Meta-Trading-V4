@@ -718,7 +718,14 @@ class LiveTrader:
                 account = self.connector.account() or {}
                 events = refresh_daily_guards(self.state, account, now)
                 for ev in events:
-                    if ev == "daily_loss_limit":
+                    if ev == "account_changed":
+                        logger.info("MT5 account changed - day counters and "
+                                    "guards re-anchored to this account")
+                        send_telegram("New MT5 account detected - daily "
+                                      "counters reset for this account", "info")
+                    elif ev == "new_day":
+                        logger.info("new UTC day - daily guards re-armed")
+                    elif ev == "daily_loss_limit":
                         send_telegram("DAILY LOSS LIMIT hit - no new entries "
                                       "until tomorrow (UTC)", "critical")
                     elif ev == "daily_profit_target":

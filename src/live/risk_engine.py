@@ -137,15 +137,27 @@ def refresh_daily_guards(state: dict, account: dict, now: datetime) -> list[str]
         return events
 
     today = now.date().isoformat()
+    login = str(account.get("login") or "")
     day = state["day"]
-    if day.get("date") != today:
+    # Roll the anchors at a new UTC day OR when the engine finds itself on
+    # a DIFFERENT MT5 account: state/live_state.json is per-machine, not
+    # per-account, so without this a stale start_equity from the previous
+    # account fires the USD guards on phantom P&L (observed 2026-09-12: a
+    # fresh $100k account inherited the old account's ~$99.9k anchor and
+    # instantly "hit" a $100 daily target with zero trades).
+    account_changed = bool(login) and str(day.get("login") or "") != login
+    if day.get("date") != today or account_changed:
         state["day"] = {
-            "date": today, "start_balance": balance, "start_equity": equity,
+            "date": today, "login": login,
+            "start_balance": balance, "start_equity": equity,
             "closed_count": 0, "realized_pnl": 0.0,
             "halted_loss": False, "profit_lock": False,
         }
         state["halted_drawdown"] = False   # breaker re-arms each new UTC day
-        events.append("new_day")
+        state["peak_equity"] = equity      # and anchors to THIS account
+        events.append("account_changed"
+                      if account_changed and day.get("date") == today
+                      else "new_day")
         day = state["day"]
 
     peak = state.get("peak_equity")

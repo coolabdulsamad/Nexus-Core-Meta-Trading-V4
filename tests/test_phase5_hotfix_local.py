@@ -324,6 +324,30 @@ check("close-all hits every position with daily_target",
       sorted(sym for sym, _ in closed) == ["EURUSD", "GBPUSD"]
       and all(r == "daily_target" for _, r in closed))
 
+print("\n=== 6. account change re-anchors daily guards ===")
+# The 2026-09-12 false-target bug: state file carried over from account A
+# (start_equity ~99.9k after a losing week) onto fresh $100k account B.
+# usd_up = 100000 - 99900 = 100 >= target -> phantom "daily target reached".
+st4 = default_state()
+refresh_daily_guards(st4, {"equity": 99900.0, "balance": 100000.0,
+                           "login": 1111111111}, NOW)
+ev = refresh_daily_guards(st4, {"equity": 100000.0, "balance": 100000.0,
+                                "login": 1302124677}, NOW)
+check("account change detected", "account_changed" in ev)
+check("no phantom profit target on account switch",
+      "daily_profit_target" not in ev and not st4["day"]["profit_lock"])
+check("anchor re-set to new account equity",
+      st4["day"]["start_equity"] == 100000.0
+      and st4["day"]["login"] == "1302124677")
+
+# same account, same day -> anchors stay put, guard can still fire for real
+ev = refresh_daily_guards(st4, {"equity": 100260.0, "balance": 100000.0,
+                                "login": 1302124677}, NOW)
+check("same account + real gain -> target fires",
+      "daily_profit_target" in ev and "account_changed" not in ev)
+check("peak equity re-anchored to new account",
+      st4["peak_equity"] == 100260.0)
+
 print("\n============================================================")
 print(f"RESULT: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
