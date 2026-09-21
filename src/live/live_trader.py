@@ -212,8 +212,11 @@ class LiveTrader:
             return
         allowed, why = entries_allowed(self.state)
         if not allowed:
-            logger.info(f"entry cycle: blocked account-wide ({why})")
-            self._last_scan = f"blocked ({why})"
+            _se = float(self.state["day"].get("start_equity") or 0.0)
+            _eq = float(account.get("equity") or 0.0)
+            logger.info(f"entry cycle: blocked account-wide ({why}) | "
+                        f"day pnl {_eq - _se:+.2f} vs day-start {_se:.2f}")
+            self._last_scan = (f"blocked ({why}, day {_eq - _se:+.2f})")
 
         # open book as risk-engine dicts
         open_infos = []
@@ -734,10 +737,17 @@ class LiveTrader:
                         send_telegram("DAILY LOSS LIMIT hit - no new entries "
                                       "until tomorrow (UTC)", "critical")
                     elif ev == "daily_profit_target":
+                        _se = float(self.state["day"].get("start_equity") or 0.0)
+                        _eq = float(account.get("equity") or 0.0)
+                        logger.info(f"daily profit target hit: equity {_eq:.2f} "
+                                    f"vs day start {_se:.2f} "
+                                    f"({_eq - _se:+.2f} >= "
+                                    f"{config.DAILY_PROFIT_TARGET_USD:.0f})")
                         if config.DAILY_TARGET_CLOSE_ALL:
                             send_telegram(
                                 f"DAILY TARGET +${config.DAILY_PROFIT_TARGET_USD:.0f} "
-                                f"reached - closing all positions, done for today",
+                                f"reached (day pnl {_eq - _se:+.2f} at trigger) "
+                                f"- closing all positions, done for today",
                                 "target")
                             self._close_all_for_day(now)
                         else:
