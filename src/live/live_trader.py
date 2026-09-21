@@ -138,9 +138,14 @@ class LiveTrader:
             f"account {account.get('login')} @ {account.get('server')} | "
             f"equity {account.get('equity', 0):.0f} {account.get('currency')}\n"
             f"universe: {len(self.universe)} symbols | "
-            f"open positions tracked: {len(self.state['positions'])}", "info")
+            f"open positions tracked: {len(self.state['positions'])}\n"
+            f"daily guards: target +${config.DAILY_PROFIT_TARGET_USD:.0f} "
+            f"(close all + done for day) | loss limit "
+            f"-${config.DAILY_LOSS_LIMIT_USD:.0f}", "info")
         logger.info(f"setup complete: {len(self.universe)} symbols, "
-                    f"DRY_RUN={config.DRY_RUN}")
+                    f"DRY_RUN={config.DRY_RUN}, daily target "
+                    f"+${config.DAILY_PROFIT_TARGET_USD:.0f}, loss limit "
+                    f"-${config.DAILY_LOSS_LIMIT_USD:.0f}")
         return True
 
     # ------------------------------------------------------------------
