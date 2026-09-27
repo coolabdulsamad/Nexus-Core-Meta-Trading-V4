@@ -19,7 +19,7 @@ in account currency, computed from the broker's tick value / tick size
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from config.settings import config
@@ -209,3 +209,34 @@ def entries_allowed(state: dict) -> tuple[bool, str]:
     if day.get("profit_lock"):
         return False, "daily profit target locked"
     return True, "ok"
+
+
+# ---------------------------------------------------------------------------
+# Symbol performance gate (live-only overlay; see config comments)
+# ---------------------------------------------------------------------------
+def symbol_perf_verdict(state: dict, symbol: str,
+                        now: datetime) -> tuple[bool, str]:
+    """Rolling per-symbol R scorecard. Returns (blocked, detail).
+
+    A symbol is paused when it has >= SYMBOL_PERF_MIN_TRADES closes inside
+    the rolling SYMBOL_PERF_WINDOW_DAYS window AND their summed R multiple
+    is <= SYMBOL_PERF_BLOCK_R. Old closes age out of the window on their
+    own, so a paused symbol is re-admitted automatically once its recent
+    record no longer meets the block rule."""
+    if not config.SYMBOL_PERF_GATE_ENABLED:
+        return False, ""
+    from src.live.state import parse_iso          # avoid module cycle at import
+    cutoff = now - timedelta(days=config.SYMBOL_PERF_WINDOW_DAYS)
+    rs: list[float] = []
+    for item in state.get("perf", {}).get(symbol, []):
+        try:
+            ts, r = parse_iso(str(item[0])), float(item[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if ts is not None and ts >= cutoff:
+            rs.append(r)
+    if len(rs) >= config.SYMBOL_PERF_MIN_TRADES \
+            and sum(rs) <= config.SYMBOL_PERF_BLOCK_R:
+        return True, (f"{len(rs)} trades {sum(rs):+.1f}R in "
+                      f"{config.SYMBOL_PERF_WINDOW_DAYS}d")
+    return False, ""

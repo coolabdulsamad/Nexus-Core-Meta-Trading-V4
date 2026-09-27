@@ -172,6 +172,26 @@ positive, we tune in Phase 7 before ever discussing live money.
 > - **Logging** — every entry logs quality/prob/agreement/regime/spread/
 >   drift/risk in one line; every close logs pnl, R, peak ATR reached
 >   (MFE), hold time, entry and exit prices.
+>
+> **Update (2026-09-27):** week-2/3 evidence (64 trades, −$1,560) — exit
+> stack v2 works (breakeven lock 14 fires, ratchets 7; every stop that saw
+> ≥+1 ATR closed POSITIVE) and the brain has clear per-symbol skill:
+> BTCUSD/ETHUSD went **10/10 for +$1,234** while LTCUSD/XAGUSD/ADAUSD went
+> 0/4 for −$1,327 and metals bled (XAUUSD −$589). 22 of 35 stop-outs never
+> saw +0.25 ATR — immediate-death entries concentrated in forex crosses /
+> minor crypto. Shipped in response (all live-only overlays, backtests
+> untouched, covered by `test_phase5_hotfix_local.py` 37/37):
+> - **Symbol performance gate** — rolling 14-day per-symbol R scorecard;
+>   ≥3 closes and total ≤ −1.5R pauses the symbol until its record ages
+>   out. Realized performance now votes on the universe.
+> - **Fast guards** — daily USD guards re-evaluated every 15s instead of
+>   riding the 60s manage cycle; target/limit crosses are acted on within
+>   seconds.
+> - **Loss limit closes all** (`DAILY_LOSS_CLOSE_ALL`) — the day is capped
+>   at the limit instead of bleeding on with entries blocked (Sep 14 lost
+>   another −$260 AFTER the limit fired; Sep 26 ended −$783).
+> - **Trigger transparency** — target/limit hits log equity vs day-start
+>   with numbers; trailing-stop moves now send Telegram like the ratchets.
 
 Steps:
 1. `src/live/live_trader.py` — main loop on the hourly bar close:

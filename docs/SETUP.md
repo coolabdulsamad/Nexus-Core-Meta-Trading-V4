@@ -77,8 +77,12 @@ Fill in:
   (realized + floating) reaches this, every open position is closed and no
   new trades open until the next UTC day. Set `0` to disable the USD target
   (the percentage target still applies).
-- **DAILY_LOSS_LIMIT_USD** — default `400`. Same idea on the downside: the
-  day is halted when equity is down this much.
+- **DAILY_LOSS_LIMIT_USD** — default `400`. Same idea on the downside: when
+  equity is down this much, all positions are closed and the day is halted
+  (`DAILY_LOSS_CLOSE_ALL` in `config/settings.py`; set it `False` to only
+  block new entries and let open trades run their SL/TP).
+- **Daily guards check every 15s** (`GUARD_CHECK_SECONDS`) — they act
+  within seconds of the equity crossing, not at the next minute boundary.
 - **DRY_RUN=true** — leave it. Seriously.
 
 ## 5. Start the infrastructure

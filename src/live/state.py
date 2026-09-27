@@ -39,6 +39,9 @@ def default_state() -> dict:
         # ---- loss cooldowns (per symbol) ----
         "no_entry_until": {},   # symbol -> iso ts: no new entry before this
         "stop_times": {},       # symbol -> [iso ts] of recent stop-outs
+        # symbol -> [[iso ts, r_multiple], ...] rolling scorecard for the
+        # performance gate (risk_engine.symbol_perf_verdict)
+        "perf": {},
         # ---- daily guards (refreshed at 00:00 UTC) ----
         "day": {
             "date": None,             # "YYYY-MM-DD" (UTC) the anchors belong to

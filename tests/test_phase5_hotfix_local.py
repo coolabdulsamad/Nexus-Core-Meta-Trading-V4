@@ -348,6 +348,83 @@ check("same account + real gain -> target fires",
 check("peak equity re-anchored to new account",
       st4["peak_equity"] == 100260.0)
 
+print("\n=== 7. symbol performance gate + loss-limit close-all ===")
+from src.live.risk_engine import symbol_perf_verdict
+from src.live.state import iso as _iso
+
+st5 = default_state()
+# 3 losing closes in-window, -2.9R total -> blocked
+st5["perf"]["LTCUSD"] = [
+    [_iso(NOW - timedelta(days=1)), -1.0],
+    [_iso(NOW - timedelta(days=2)), -0.9],
+    [_iso(NOW - timedelta(days=3)), -1.0],
+]
+blocked, detail = symbol_perf_verdict(st5, "LTCUSD", NOW)
+check("perf gate blocks a repeat loser", blocked and "-2.9R" in detail)
+
+# only 2 trades -> not enough evidence
+st5["perf"]["ADAUSD"] = [[_iso(NOW - timedelta(days=1)), -1.0],
+                         [_iso(NOW - timedelta(days=2)), -1.0]]
+blocked, _ = symbol_perf_verdict(st5, "ADAUSD", NOW)
+check("perf gate needs >= 3 trades", not blocked)
+
+# net positive record -> allowed even with losses inside
+st5["perf"]["BTCUSD"] = [[_iso(NOW - timedelta(days=1)), -1.0],
+                         [_iso(NOW - timedelta(days=2)), +1.2],
+                         [_iso(NOW - timedelta(days=3)), +1.1]]
+blocked, _ = symbol_perf_verdict(st5, "BTCUSD", NOW)
+check("perf gate passes a net winner", not blocked)
+
+# losses older than the window age out -> symbol re-admitted
+st5["perf"]["OLDUSD"] = [
+    [_iso(NOW - timedelta(days=config.SYMBOL_PERF_WINDOW_DAYS + 1)), -1.0],
+    [_iso(NOW - timedelta(days=config.SYMBOL_PERF_WINDOW_DAYS + 2)), -1.0],
+    [_iso(NOW - timedelta(days=config.SYMBOL_PERF_WINDOW_DAYS + 3)), -1.0],
+]
+blocked, _ = symbol_perf_verdict(st5, "OLDUSD", NOW)
+check("perf gate window expires old losses", not blocked)
+
+# kill switch
+config.SYMBOL_PERF_GATE_ENABLED = False
+blocked, _ = symbol_perf_verdict(st5, "LTCUSD", NOW)
+check("perf gate disabled -> always allowed", not blocked)
+config.SYMBOL_PERF_GATE_ENABLED = True
+
+# finalize_close feeds the scorecard
+from src.live.reconciler import finalize_close
+st6 = default_state()
+p = ManagedPosition(ticket=777, symbol="XAGUSD", asset_class="metal",
+                    side="LONG", entry_price=30.0,
+                    entry_time=state_mod.iso(NOW), initial_volume=1.0,
+                    volume=1.0, atr=0.5, sl=29.0, tp=31.5,
+                    peak_price=30.1, trough_price=30.0,
+                    risk_usd=100.0, dry_run=True)
+st6["positions"]["777"] = p.to_dict()
+finalize_close(st6, p, exit_price=29.0, exit_time=NOW,
+               reason="stop_loss", pnl=-100.0)
+check("finalize_close records perf", st6["perf"]["XAGUSD"][-1][1] == -1.0)
+check("777 removed from state", "777" not in st6["positions"])
+
+# loss-limit close-all: positions get CLOSE_ALL with daily_loss_limit
+t4 = LT.LiveTrader.__new__(LT.LiveTrader)
+t4.state = default_state()
+t4.state["day"]["date"] = NOW.date().isoformat()
+closed2 = []
+t4.connector = ConnClose()
+t4._apply_actions = lambda pos, price, actions, now: (
+    closed2.append((pos.symbol, actions[0][2])),
+    t4.state["positions"].pop(str(pos.ticket), None))
+p2 = ManagedPosition(ticket=888, symbol="EURUSD", asset_class="forex",
+                     side="LONG", entry_price=1.1000,
+                     entry_time=state_mod.iso(NOW), initial_volume=0.1,
+                     volume=0.1, atr=0.001, sl=1.0980, tp=1.1030,
+                     peak_price=1.1005, trough_price=1.1000,
+                     risk_usd=20.0, dry_run=False)
+t4.state["positions"]["888"] = p2.to_dict()
+t4._close_all_for_day(NOW, reason="daily_loss_limit")
+check("loss-limit close-all uses daily_loss_limit reason",
+      closed2 == [("EURUSD", "daily_loss_limit")])
+
 print("\n============================================================")
 print(f"RESULT: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

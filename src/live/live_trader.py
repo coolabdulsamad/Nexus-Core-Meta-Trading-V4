@@ -51,7 +51,7 @@ from src.live.position_manager import (CLOSE_ALL, CLOSE_VOLUME, SET_SL,
 from src.live.reconciler import estimate_pnl, finalize_close, reconcile
 from src.live.risk_engine import (RiskEngine, currency_exposure,
                                   entries_allowed, position_risk_usd,
-                                  refresh_daily_guards)
+                                  refresh_daily_guards, symbol_perf_verdict)
 from src.live.state import iso, load_state, now_utc, parse_iso, save_state
 from src.memory.meta_learner import Brain
 from src.mt5_client.connector import MT5Connector
@@ -88,6 +88,9 @@ class LiveTrader:
         self._broker_offset_h = 0.0
         self._last_scan = ""                        # one-line funnel summary
         self._last_alive_log = datetime.min.replace(tzinfo=timezone.utc)
+        # guards run every GUARD_CHECK_SECONDS; manage/entry keep their own
+        # 60s cadence - this timestamp separates the two clocks
+        self._last_manage = datetime.min.replace(tzinfo=timezone.utc)
 
     def _refresh_broker_offset(self, now: datetime) -> None:
         """Whole-hour offset of broker server time vs true UTC, derived from
@@ -281,6 +284,10 @@ class LiveTrader:
             cooldown = parse_iso(self.state["no_entry_until"].get(symbol))
             if cooldown and now < cooldown:
                 rejects["cooldown"] = rejects.get("cooldown", 0) + 1
+                continue
+            perf_blocked, perf_why = symbol_perf_verdict(self.state, symbol, now)
+            if perf_blocked:
+                rejects["perf_pause"] = rejects.get("perf_pause", 0) + 1
                 continue
             if not _session_ok(ts_idx[-1], symbol):
                 rejects["session"] = rejects.get("session", 0) + 1
@@ -571,7 +578,7 @@ class LiveTrader:
                 else:
                     continue                     # retry next cycle
                 if reason in ("ratchet", "ratchet2", "breakeven_lock",
-                              "flip_tighten"):
+                              "flip_tighten", "trailing"):
                     send_telegram(f"{pos.symbol}: stop {reason} -> {new_sl}",
                                   "info")
                 if reason == "flip_tighten":
@@ -686,16 +693,15 @@ class LiveTrader:
                     logger.info("daily maintenance completed OK")
                 self._maintenance_proc = None
 
-    def _close_all_for_day(self, now: datetime) -> None:
-        """Daily profit target hit: bank EVERYTHING. Failed closes stay in
+    def _close_all_for_day(self, now: datetime, reason: str = "daily_target") -> None:
+        """A daily guard fired: bank/cap EVERYTHING. Failed closes stay in
         state and the main loop retries them each cycle until flat."""
         for pos_d in list(self.state["positions"].values()):
             pos = ManagedPosition.from_dict(pos_d)
             price = self.connector.get_latest_price(pos.symbol, pos.side)
             if price is None or price <= 0:
                 price = pos.entry_price          # last resort; still journals
-            self._apply_actions(pos, price, [(CLOSE_ALL, None, "daily_target")],
-                                now)
+            self._apply_actions(pos, price, [(CLOSE_ALL, None, reason)], now)
 
     def _lock_breakeven(self, now: datetime) -> None:
         """Daily profit target hit: pull every stop to at least entry."""
@@ -734,8 +740,21 @@ class LiveTrader:
                     elif ev == "new_day":
                         logger.info("new UTC day - daily guards re-armed")
                     elif ev == "daily_loss_limit":
-                        send_telegram("DAILY LOSS LIMIT hit - no new entries "
-                                      "until tomorrow (UTC)", "critical")
+                        _se = float(self.state["day"].get("start_equity") or 0.0)
+                        _eq = float(account.get("equity") or 0.0)
+                        logger.info(f"daily loss limit hit: equity {_eq:.2f} "
+                                    f"vs day start {_se:.2f} "
+                                    f"({_eq - _se:+.2f})")
+                        if config.DAILY_LOSS_CLOSE_ALL:
+                            send_telegram(
+                                f"DAILY LOSS LIMIT hit ({_eq - _se:+.2f}) - "
+                                f"closing all positions, done for today",
+                                "critical")
+                            self._close_all_for_day(now,
+                                                    reason="daily_loss_limit")
+                        else:
+                            send_telegram("DAILY LOSS LIMIT hit - no new entries "
+                                          "until tomorrow (UTC)", "critical")
                     elif ev == "daily_profit_target":
                         _se = float(self.state["day"].get("start_equity") or 0.0)
                         _eq = float(account.get("equity") or 0.0)
@@ -757,11 +776,28 @@ class LiveTrader:
                                       f"{config.MAX_DRAWDOWN_PCT:.0%} from peak - "
                                       f"entries halted until tomorrow", "critical")
 
-                # target fired but a close failed -> keep retrying until flat
-                if config.DAILY_TARGET_CLOSE_ALL \
-                        and self.state["day"].get("profit_lock") \
-                        and self.state["positions"]:
-                    self._close_all_for_day(now)
+                # a guard fired but a close failed -> keep retrying until flat
+                if self.state["positions"]:
+                    if config.DAILY_TARGET_CLOSE_ALL \
+                            and self.state["day"].get("profit_lock"):
+                        self._close_all_for_day(now)
+                    elif config.DAILY_LOSS_CLOSE_ALL \
+                            and self.state["day"].get("halted_loss"):
+                        self._close_all_for_day(now, reason="daily_loss_limit")
+
+                # FAST PATH: guards ran; the heavier manage/entry work keeps
+                # its 60s cadence. Guard cycles are one account() call +
+                # arithmetic, so 15s costs nothing and a limit/target cross
+                # is acted on within seconds, not "within a minute".
+                if (now - self._last_manage).total_seconds() \
+                        < config.LIVE_MANAGE_EVERY_SECONDS:
+                    if events:
+                        save_state(config.LIVE_STATE_PATH, self.state)
+                    if once:
+                        break
+                    time.sleep(config.GUARD_CHECK_SECONDS)
+                    continue
+                self._last_manage = now
 
                 self._manage(now)
 
@@ -797,7 +833,7 @@ class LiveTrader:
                 send_telegram(f"cycle error (engine alive): {exc}", "critical")
             if once:
                 break
-            time.sleep(config.LIVE_MANAGE_EVERY_SECONDS)
+            time.sleep(config.GUARD_CHECK_SECONDS)
 
         save_state(config.LIVE_STATE_PATH, self.state)
         self.connector.shutdown()

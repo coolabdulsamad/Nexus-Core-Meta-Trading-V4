@@ -227,6 +227,17 @@ class GlobalConfig:
     REPEAT_LOSS_WINDOW_DAYS = 7       # 2 stop-outs inside this window ...
     REPEAT_LOSS_COOLDOWN_HOURS = 72   # ... bans the symbol this long
 
+    # ----- Symbol performance gate (LIVE-ONLY overlay, not in backtests) -----
+    # Rolling per-symbol R scorecard: a symbol that keeps losing real money
+    # is paused until its in-window record recovers, instead of being re-fed
+    # every cooldown. Sep 12-27 evidence: BTCUSD/ETHUSD went 10/10 (+$1,234)
+    # while LTCUSD/XAGUSD/ADAUSD went 0/4 (-$1,327) - the brain clearly has
+    # per-symbol skill, so let realized performance vote on the universe.
+    SYMBOL_PERF_GATE_ENABLED = True
+    SYMBOL_PERF_WINDOW_DAYS = 14      # rolling scorecard window
+    SYMBOL_PERF_MIN_TRADES = 3        # need at least this many closes in-window ...
+    SYMBOL_PERF_BLOCK_R = -1.5        # ... with total R at/below this -> paused
+
     # ----- Trade structure (1h recalibration) -----
     STOP_ATR_MULT = 2.0               # stop distance = 2 x ATR(1h)
     REWARD_RISK_RATIO = 1.5           # TP = 1.5R (3 x ATR)
@@ -298,6 +309,10 @@ class GlobalConfig:
     DAILY_PROFIT_TARGET_USD = float(os.getenv("DAILY_PROFIT_TARGET_USD", "200"))
     DAILY_TARGET_CLOSE_ALL = True     # target hit -> CLOSE EVERYTHING, done for the day
     DAILY_LOSS_LIMIT_USD = float(os.getenv("DAILY_LOSS_LIMIT_USD", "400"))  # 0 = off
+    # loss limit hit -> CLOSE EVERYTHING too: the day is capped at the limit
+    # instead of bleeding on with entries blocked (Sep 14 evidence: positions
+    # kept open after the limit lost another -$260; day ended -$745)
+    DAILY_LOSS_CLOSE_ALL = True
 
     # ----- Circuit breakers -----
     MAX_DRAWDOWN_PCT = 0.10
@@ -335,6 +350,10 @@ class GlobalConfig:
     DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() != "false"
     LIVE_STATE_PATH = os.getenv("LIVE_STATE_PATH", "state/live_state.json")
     LIVE_MANAGE_EVERY_SECONDS = 60    # position-management cadence (tick-based exits)
+    # daily guards (equity-based) are re-evaluated THIS often - a fast crypto
+    # move can cross the USD target/limit inside one 60s manage cycle, and
+    # the operator asked guards to act immediately, not "within a minute"
+    GUARD_CHECK_SECONDS = 15
     LIVE_ENTRY_DELAY_SECONDS = 20     # after the hour: let the broker finalize the closed bar
     HEARTBEAT_SECONDS = TELEGRAM_HEARTBEAT_CYCLES * 300  # ~30 min at the old 300s cadence
 

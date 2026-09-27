@@ -27,7 +27,8 @@ from typing import Callable, Optional
 from config.settings import config
 from src.live.journal import journal_close
 from src.live.position_manager import ManagedPosition
-from src.live.risk_engine import position_risk_usd, stop_distance_for
+from src.live.risk_engine import (position_risk_usd, stop_distance_for,
+                                  symbol_perf_verdict)
 from src.live.state import iso, parse_iso
 from src.utils.logger import setup_logger
 from src.utils.telegram import send_telegram
@@ -36,7 +37,8 @@ logger = setup_logger("Reconciler", "logs/live.log")
 
 _CLOSE_ICONS = {"stop_loss": "stop", "take_profit": "target",
                 "scale_out_1": "partial", "scale_out_2": "partial",
-                "time_partial": "partial", "daily_target": "target"}
+                "time_partial": "partial", "daily_target": "target",
+                "daily_loss_limit": "stop"}
 
 
 def estimate_pnl(pos: ManagedPosition, exit_price: float,
@@ -83,6 +85,20 @@ def finalize_close(state: dict, pos: ManagedPosition, *, exit_price: float,
     day = state.get("day", {})
     day["closed_count"] = int(day.get("closed_count", 0)) + 1
     day["realized_pnl"] = float(day.get("realized_pnl", 0.0)) + pnl
+
+    # ---- performance scorecard (feeds risk_engine.symbol_perf_verdict) --
+    was_blocked, _ = symbol_perf_verdict(state, sym, exit_time)
+    perf = state.setdefault("perf", {})
+    rows = perf.setdefault(sym, [])
+    rows.append([iso(exit_time), round(r_multiple, 3)])
+    cutoff_p = exit_time - timedelta(days=config.SYMBOL_PERF_WINDOW_DAYS * 2)
+    perf[sym] = [row for row in rows
+                 if (parse_iso(str(row[0])) or exit_time) >= cutoff_p]
+    is_blocked, detail = symbol_perf_verdict(state, sym, exit_time)
+    if is_blocked and not was_blocked:
+        send_telegram(f"{sym}: performance pause - {detail}; no new "
+                      f"entries until the recent record recovers", "warning")
+        logger.warning(f"{sym}: performance gate engaged ({detail})")
 
     # ---- notify + forget -------------------------------------------------
     # MFE (max favorable excursion, in ATR) tells us how much profit the
