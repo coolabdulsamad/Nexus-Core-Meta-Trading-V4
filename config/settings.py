@@ -308,6 +308,11 @@ class GlobalConfig:
     # Measured on EQUITY vs the day's start equity, so floating profit counts.
     DAILY_PROFIT_TARGET_USD = float(os.getenv("DAILY_PROFIT_TARGET_USD", "200"))
     DAILY_TARGET_CLOSE_ALL = True     # target hit -> CLOSE EVERYTHING, done for the day
+    # ... but if the close-out LANDS below the target (slippage between the
+    # floating trigger and the fills: Sep 28 triggered at +$200.81, banked
+    # +$161.33), release the lock and keep trading until +target is actually
+    # banked - otherwise the day ends short AND locked, the worst of both
+    DAILY_TARGET_RECHECK_AFTER_CLOSE = True
     DAILY_LOSS_LIMIT_USD = float(os.getenv("DAILY_LOSS_LIMIT_USD", "400"))  # 0 = off
     # loss limit hit -> CLOSE EVERYTHING too: the day is capped at the limit
     # instead of bleeding on with entries blocked (Sep 14 evidence: positions

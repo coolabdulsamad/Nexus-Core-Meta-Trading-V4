@@ -703,6 +703,34 @@ class LiveTrader:
                 price = pos.entry_price          # last resort; still journals
             self._apply_actions(pos, price, [(CLOSE_ALL, None, reason)], now)
 
+    def _recheck_target_lock(self, account: dict) -> bool:
+        """The close-out LANDED below the target (slippage between the
+        floating trigger and the fills): release the lock and go earn the
+        rest, otherwise the day ends short of target AND unable to trade.
+        Only evaluated when flat (equity == balance = truly banked).
+        Returns True when the lock was released."""
+        day = self.state["day"]
+        if not (config.DAILY_TARGET_RECHECK_AFTER_CLOSE
+                and config.DAILY_TARGET_CLOSE_ALL
+                and day.get("profit_lock")
+                and not self.state["positions"]):
+            return False
+        se = float(day.get("start_equity") or 0.0)
+        eq = float(account.get("equity") or 0.0)
+        if se <= 0 or config.DAILY_PROFIT_TARGET_USD <= 0:
+            return False
+        if eq - se >= config.DAILY_PROFIT_TARGET_USD:
+            return False
+        day["profit_lock"] = False
+        logger.info(f"daily target close-out banked {eq - se:+.2f} (< "
+                    f"{config.DAILY_PROFIT_TARGET_USD:.0f}) - lock "
+                    f"released, trading resumes")
+        send_telegram(
+            f"close-out banked {eq - se:+.2f} - below the "
+            f"+${config.DAILY_PROFIT_TARGET_USD:.0f} target, lock "
+            f"released: back to work for the rest", "info")
+        return True
+
     def _lock_breakeven(self, now: datetime) -> None:
         """Daily profit target hit: pull every stop to at least entry."""
         for pos_d in list(self.state["positions"].values()):
@@ -784,6 +812,11 @@ class LiveTrader:
                     elif config.DAILY_LOSS_CLOSE_ALL \
                             and self.state["day"].get("halted_loss"):
                         self._close_all_for_day(now, reason="daily_loss_limit")
+
+                # flat after a target close-out that landed SHORT of the
+                # target -> release the lock and keep working the day
+                if self._recheck_target_lock(account):
+                    save_state(config.LIVE_STATE_PATH, self.state)
 
                 # FAST PATH: guards ran; the heavier manage/entry work keeps
                 # its 60s cadence. Guard cycles are one account() call +

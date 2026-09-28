@@ -425,6 +425,42 @@ t4._close_all_for_day(NOW, reason="daily_loss_limit")
 check("loss-limit close-all uses daily_loss_limit reason",
       closed2 == [("EURUSD", "daily_loss_limit")])
 
+print("\n=== 8. target close-out recheck (the +161.33 shortfall) ===")
+# Sep 28: triggered at +200.81 floating, banked +161.33, day locked short
+# of target and unable to trade. The lock must release when the banked
+# amount lands below the target.
+t5 = LT.LiveTrader.__new__(LT.LiveTrader)
+t5.state = default_state()
+t5.state["day"].update(date=NOW.date().isoformat(), login="1302124677",
+                       start_balance=98391.43, start_equity=98391.43,
+                       profit_lock=True)
+
+# flat + banked < target -> release
+released = t5._recheck_target_lock({"equity": 98552.76})   # +161.33 banked
+check("short close-out releases the lock", released is True)
+check("profit_lock cleared", t5.state["day"]["profit_lock"] is False)
+from src.live.risk_engine import entries_allowed as _ea
+ok, _ = _ea(t5.state)
+check("entries resume after release", ok)
+
+# flat + banked >= target -> stays locked (day really done)
+t5.state["day"]["profit_lock"] = True
+released = t5._recheck_target_lock({"equity": 98600.00})   # +208.57 banked
+check("close-out at target stays locked",
+      released is False and t5.state["day"]["profit_lock"] is True)
+
+# still closing positions down -> do NOT release yet (equity != banked)
+t5.state["positions"]["999"] = {"ticket": 999}
+released = t5._recheck_target_lock({"equity": 98552.76})
+check("no release while positions still open", released is False)
+t5.state["positions"].clear()
+
+# kill switch off -> never releases
+config.DAILY_TARGET_RECHECK_AFTER_CLOSE = False
+released = t5._recheck_target_lock({"equity": 98552.76})
+check("recheck disabled -> stays locked", released is False)
+config.DAILY_TARGET_RECHECK_AFTER_CLOSE = True
+
 print("\n============================================================")
 print(f"RESULT: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

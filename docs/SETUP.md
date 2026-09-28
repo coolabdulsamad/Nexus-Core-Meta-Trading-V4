@@ -75,8 +75,11 @@ Fill in:
 - **NEWSAPI_KEY** — free key at newsapi.org (Phase 6; can stay empty now).
 - **DAILY_PROFIT_TARGET_USD** — default `200`. When the day's equity gain
   (realized + floating) reaches this, every open position is closed and no
-  new trades open until the next UTC day. Set `0` to disable the USD target
-  (the percentage target still applies).
+  new trades open until the next UTC day. If the close-out *lands* below
+  the target (slippage between trigger and fills), the lock releases and
+  trading resumes until the target is actually banked
+  (`DAILY_TARGET_RECHECK_AFTER_CLOSE` in `config/settings.py`). Set `0` to
+  disable the USD target (the percentage target still applies).
 - **DAILY_LOSS_LIMIT_USD** — default `400`. Same idea on the downside: when
   equity is down this much, all positions are closed and the day is halted
   (`DAILY_LOSS_CLOSE_ALL` in `config/settings.py`; set it `False` to only
