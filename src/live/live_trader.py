@@ -105,7 +105,11 @@ class LiveTrader:
             if not t:
                 continue
             off = (float(t) - now.timestamp()) / 3600.0
-            if abs(off) <= 14:                    # fresh tick only
+            # real broker offsets are tiny (XM: +2/+3 DST); a weekend-stale
+            # tick sits ~13h+ behind and would poison target_bar (observed
+            # 2026-10-03: "broker UTC-11/-12/-13" rescanning a dead Friday
+            # bar all Saturday). Only accept plausible offsets.
+            if abs(off) <= 6:                     # fresh tick only
                 self._broker_offset_h = float(round(off))
                 return
 

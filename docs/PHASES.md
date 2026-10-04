@@ -192,6 +192,24 @@ positive, we tune in Phase 7 before ever discussing live money.
 >   another −$260 AFTER the limit fired; Sep 26 ended −$783).
 > - **Trigger transparency** — target/limit hits log equity vs day-start
 >   with numbers; trailing-stop moves now send Telegram like the ratchets.
+>
+> **Update (2026-10-04):** 3-week scoreboard (97 trades, −$2,073.55) made
+> the concentration undeniable — **BTCUSD 7/7 for +$975.88** (the only
+> perfect record), AUDUSD/EURAUD/NZDCAD modestly green, and *everything
+> else combined −$3,049 over 90 trades*. ETHUSD turned negative
+> (−$97.51; last trade −$387 via daily-loss close) → probation. Shipped:
+> - **Trade allowlist** (`TRADE_ALLOWLIST`, env-overridable) — live
+>   trading restricted to BTCUSD + AUDUSD + EURAUD + NZDCAD. Data pump /
+>   backfill / memory still cover ALL pools, so paused symbols keep
+>   learning and can earn re-admission later.
+> - **Weekend offset fix** — broker-offset acceptance tightened to ±6h;
+>   stale Friday FX ticks (~13h old) can no longer poison `target_bar`
+>   into rescanning a dead bar all Saturday (observed 2026-10-03).
+> - Earlier same week: account-change day-anchor roll (no phantom target
+>   on a fresh login) and **target close-out recheck** — if a target
+>   close-out *banks* less than the target (slippage), the lock releases
+>   and trading resumes (Sep 28: triggered +$200.81, banked +$161.33).
+> Hotfix suite now 49/49.
 
 Steps:
 1. `src/live/live_trader.py` — main loop on the hourly bar close:

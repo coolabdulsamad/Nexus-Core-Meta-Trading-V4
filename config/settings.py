@@ -105,6 +105,26 @@ class GlobalConfig:
                    "LTCUSD", "BCHUSD", "ADAUSD", "DOGEUSD"]
     INDICES_POOL: list = []           # e.g. ["US30", "NAS100", "SPX500"] - enable deliberately
 
+    # ----- Trade allowlist (LIVE TRADING only) -----
+    # Empty = trade every pool symbol. Non-empty = trade ONLY these.
+    # Data pump / backfill / memory keep running for ALL pools either way,
+    # so paused symbols keep learning and can be re-admitted later.
+    #
+    # 2026-10-04 decision, 3 weeks of live evidence (97 trades, -$2,073):
+    #   BTCUSD   7/7 wins, +$975.88  <- the only symbol with a perfect record
+    #   AUDUSD   7 trades, 5 wins,  +$66.21
+    #   EURAUD   5 trades, 4 wins,  +$54.87
+    #   NZDCAD   5 trades, 4 wins,  +$48.21
+    #   ... EVERYTHING else combined: -$3,049 over 90 trades. ETHUSD turned
+    #   negative (-$97.51, last trade -$387) - on probation, not allowed.
+    # Override in .env as a comma list, e.g. TRADE_ALLOWLIST=BTCUSD
+    # (BTCUSD only) or TRADE_ALLOWLIST= (empty = back to all pools).
+    TRADE_ALLOWLIST = [s.strip().upper()
+                       for s in os.getenv(
+                           "TRADE_ALLOWLIST",
+                           "BTCUSD,AUDUSD,EURAUD,NZDCAD").split(",")
+                       if s.strip()]
+
     # ----- Broker naming aliases -----
     # Some brokers rename instruments ENTIRELY (not just suffixes):
     # XM calls gold "GOLD" and silver "SILVER". The resolver tries the

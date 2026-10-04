@@ -86,6 +86,12 @@ Fill in:
   block new entries and let open trades run their SL/TP).
 - **Daily guards check every 15s** (`GUARD_CHECK_SECONDS`) — they act
   within seconds of the equity crossing, not at the next minute boundary.
+- **TRADE_ALLOWLIST** — default `BTCUSD,AUDUSD,EURAUD,NZDCAD`. Only these
+  symbols may open live trades (the 4 net-winners over the first 3 live
+  weeks; everything else combined lost -$3,049 while BTCUSD alone went
+  7/7 for +$975.88). Data feeds still cover ALL pool symbols, so paused
+  names keep learning and can be re-admitted. Set empty to trade all
+  pools again.
 - **DRY_RUN=true** — leave it. Seriously.
 
 ## 5. Start the infrastructure

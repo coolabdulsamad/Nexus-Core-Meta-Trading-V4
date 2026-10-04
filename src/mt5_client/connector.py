@@ -159,16 +159,22 @@ class MT5Connector:
 
     def discover_universe(self) -> Dict[str, dict]:
         """Resolve every pool symbol against the broker. Returns
-        {canonical: {'broker_symbol', 'asset_class'}} for the ones that exist."""
+        {canonical: {'broker_symbol', 'asset_class'}} for the ones that exist.
+        config.TRADE_ALLOWLIST (when non-empty) restricts TRADING to a
+        proven subset; data feeds keep covering the full pools."""
         out = {}
         pools = (list(config.FOREX_POOL) + list(config.METALS_POOL)
                  + list(config.CRYPTO_POOL) + list(config.INDICES_POOL))
+        allow = set(config.TRADE_ALLOWLIST or [])
+        if allow:
+            pools = [s for s in pools if s in allow]
         for canonical in pools:
             broker_name = self.resolve_symbol(canonical)
             if broker_name:
                 out[canonical] = {"broker_symbol": broker_name,
                                   "asset_class": self.classify_asset(canonical)}
-        logger.info(f"Universe discovered: {len(out)}/{len(pools)} symbols tradable")
+        logger.info(f"Universe discovered: {len(out)}/{len(pools)} symbols tradable"
+                    + (f" (allowlist: {sorted(allow)})" if allow else ""))
         return out
 
     @staticmethod

@@ -461,6 +461,63 @@ released = t5._recheck_target_lock({"equity": 98552.76})
 check("recheck disabled -> stays locked", released is False)
 config.DAILY_TARGET_RECHECK_AFTER_CLOSE = True
 
+print("\n=== 9. trade allowlist + weekend-stale tick bound ===")
+# 2026-10-04 decision: 3 weeks of live evidence (97 trades, -$2,073) showed
+# BTCUSD 7/7 +$975.88 while everything-else lost -$3,049. TRADE_ALLOWLIST
+# restricts the TRADING universe; data feeds keep covering full pools.
+from src.mt5_client.connector import MT5Connector
+
+_saved_allow = config.TRADE_ALLOWLIST
+try:
+    config.TRADE_ALLOWLIST = ["BTCUSD", "AUDUSD", "EURAUD", "NZDCAD"]
+    c = MT5Connector.__new__(MT5Connector)
+    c._symbol_map = {}
+    c.resolve_symbol = lambda s: s          # pretend broker has everything
+    uni = c.discover_universe()
+    check("allowlist -> exactly the 4 proven symbols",
+          set(uni) == {"BTCUSD", "AUDUSD", "EURAUD", "NZDCAD"})
+    check("allowlist symbols keep asset classes",
+          uni["BTCUSD"]["asset_class"] == "crypto"
+          and uni["AUDUSD"]["asset_class"] == "forex")
+
+    config.TRADE_ALLOWLIST = []
+    uni_full = c.discover_universe()
+    n_pools = (len(config.FOREX_POOL) + len(config.METALS_POOL)
+               + len(config.CRYPTO_POOL) + len(config.INDICES_POOL))
+    check("empty allowlist -> full pools tradable",
+          len(uni_full) == n_pools and "XAUUSD" in uni_full)
+finally:
+    config.TRADE_ALLOWLIST = _saved_allow
+
+# Weekend-stale tick bound: real broker offsets are tiny (XM +2/+3); the
+# 2026-10-03 Saturday log showed stale Friday ticks (~13h old) accepted as
+# "broker UTC-13", rescanning a dead bar all day. +-13h must be rejected.
+# NB: fresh object - section 2 shadowed t._refresh_broker_offset with a no-op.
+t6 = LT.LiveTrader.__new__(LT.LiveTrader)
+t6.universe = {"BTCUSD": {"asset_class": "crypto"}}
+t6._broker_offset_h = 2.0
+
+class ConnStale13:
+    def get_tick(self, sym):
+        return SimpleNamespace(time=(NOW - timedelta(hours=13)).timestamp())
+t6.connector = ConnStale13()
+t6._refresh_broker_offset(NOW)
+check("13h-stale weekend tick rejected, offset kept", t6._broker_offset_h == 2.0)
+
+class ConnFuture13:
+    def get_tick(self, sym):
+        return SimpleNamespace(time=(NOW + timedelta(hours=13)).timestamp())
+t6.connector = ConnFuture13()
+t6._refresh_broker_offset(NOW)
+check("+13h absurd tick rejected too", t6._broker_offset_h == 2.0)
+
+class ConnEdge6:
+    def get_tick(self, sym):
+        return SimpleNamespace(time=(NOW + timedelta(hours=3)).timestamp())
+t6.connector = ConnEdge6()
+t6._refresh_broker_offset(NOW)
+check("legit +3h XM offset still accepted", t6._broker_offset_h == 3.0)
+
 print("\n============================================================")
 print(f"RESULT: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
